@@ -1,0 +1,10 @@
+PyQt6
+PyQt6-WebEngine
+pandas
+numpy
+matplotlib
+folium
+geopy
+reportlab
+pyqtgraph
+scipy

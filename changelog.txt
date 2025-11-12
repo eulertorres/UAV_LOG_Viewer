@@ -1,0 +1,24 @@
+Versão 0.1.1
+
++ Salvar Relatório PDF (bugado)
++ Timestamp manual
++ Comandos de gráficos em "Todos Gráficos"
++ Timestamp sincronizado em "Todos Gráficos"
++ Indicador Aeronave aparece na trajetória (coords e orientação)
++ Melhorias performance carregamento LOGS
++ Melhorias performance Slider
++ Análise de múltiplos LOGS
++ Gráfico customizado agora pode plotar de vários logs simultanemanete
++ GIF de gato adicionado!!!
++ Janela Timestamp centralizada na janela do programa
+
+Versão 0.2.2
+
++ Leitura de logs embarcados.mat
++ Leitura de logs embarcados.spi
+* Trocado metodo plotagem All_plots para PyQT6
++ Otimização carragemento dos gráficos e plotagem linha timsetamp
++ Escala da timeline sincronizada com timestamp gráficos
++ Indicador Timestamp dinâmico
+- Gráfico Padrão de Idade da solução
++ Gráfico Padrão de análise de variabilidade de vento

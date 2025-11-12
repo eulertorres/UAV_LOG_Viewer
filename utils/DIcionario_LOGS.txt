@@ -1,0 +1,359 @@
+
+signal_name_map = {
+    # =======================
+    # Asa Fixa (Fixed Wing)
+    # =======================
+    'Monit_44_S1': 'BreakVTOL',
+    'Monit_9_S1' : 'Rudder',
+    'Monit_9_S2' : 'Elevator',
+    'Monit_10_S1': 'Engine',
+    'Monit_10_S2': 'Aileron',
+    'Monit_11_S1': 'Fail_Number',
+    'Monit_58_S1': 'Protection_Number',
+    'Monit_2_S1' : 'FW_altitude',           # rótulo visto no slide (cinza)
+    'Monit_2_S2' : 'WindCorrectedCourse',
+    'Monit_3_S1' : 'FinalPitchRef',
+    'Monit_46_S1': 'AileronR',
+    'Monit_46_S2': 'AileronL',
+    'Monit_53_S19': 'Parachute',
+
+    # =========
+    # GNSS
+    # =========
+    'Monit_113_S1': 'Latitude_PA1',
+    'Monit_114_S1': 'Longitude_PA1',
+    'Monit_115_S1': 'Altitude_PA1',
+    'Monit_81_S2' : 'VeIN_PA1',             # velocidade Norte? (do slide)
+    'Monit_82_S1' : 'VeE_PA1',              # velocidade Leste?
+    'Monit_82_S2' : 'VeU_PA1',              # velocidade Up?
+    'Monit_69_S2' : 'GNSS_NoS',             # Number of Satellites
+    'Monit_70_S1' : 'GNSS_LatError',
+    'Monit_70_S2' : 'GNSS_LonError',
+    'Monit_71_S1' : 'GNSS_AltError',
+    'Monit_71_S2' : 'ASI',                  # do seu mapeamento anterior
+    'Monit_124_S1': 'GNSS_Pos_isUp',
+
+    # GNSS pacote/seleção (booleans vindos de S128)
+    'Monit_128_S1': 'GNSS1_PackageFail',
+    'Monit_128_S2': 'GNSS2_PackageFail',
+    'Monit_128_S3': 'NavSelected',          # XGCS_NavSelector no slide
+    'Monit_128_S4': 'GNSS_MSB_bundle',      # linha MSB no slide (mantemos bruto)
+
+    'Monit_96_S1' : 'GNSS_FailNumber',
+    'Monit_99_S1' : 'GNSS_Val_Quality',
+    'Monit_99_S2' : 'GNSS_Val_DiffAgeSolution',
+    'Monit_124_S23': 'GNSS_Health',         # do bloco GNSS Health_PA1
+
+    # =========
+    # AHRS
+    # =========
+    'Monit_64_S2': 'acel_x',
+    'Monit_65_S1': 'acel_y',
+    'Monit_65_S2': 'acel_z',
+
+    'Monit_67_S1': 'AHRS_yaw',              # rad
+    'Monit_66_S1': 'AHRS_roll',             # rad
+    'Monit_66_S2': 'AHRS_pitch',            # rad
+    'Monit_68_S1': 'AHRS_q',                # visto no slide (p,q,r)
+    'Monit_68_S2': 'AHRS_r',
+
+    'Monit_74_S1': 'Mag_X',                 # no slide, alguns rótulos são K-; padronizamos
+    'Monit_75_S1': 'Mag_Y',
+    'Monit_75_S2': 'Mag_Z',
+    'Monit_83_S1': 'Declination',
+    'Monit_124_S7': 'IMU_Mag_isUp',
+
+    'Monit_61_S2': 'AHRS_pos_x_cm',
+    'Monit_62_S1': 'AHRS_pos_y_cm',
+    'Monit_62_S2': 'AHRS_pos_z_cm',
+    'Monit_63_S1': 'AHRS_vel_x_cm',
+    'Monit_63_S2': 'AHRS_vel_y_cm',
+    'Monit_64_S1': 'AHRS_vel_z_cm',
+
+    # =========
+    # EKF
+    # =========
+    'Monit_78_S2': 'EKF_pos_x',
+    'Monit_79_S1': 'EKF_pos_y',
+    'Monit_72_S2': 'EKF_pos_z',
+
+    'Monit_72_S1': 'EKF_FailSafe',
+    'Monit_69_S1': 'EKF_HealthStatus',
+
+    'Monit_73_S2': 'EKF_roll',              # deg no slide (R2D)
+    'Monit_74_S1': 'EKF_pitch',
+    'Monit_78_S1': 'EKF_yaw',
+
+    'Monit_80_S1': 'EKF_vel_x',
+    'Monit_80_S2': 'EKF_vel_y',
+    'Monit_73_S1': 'EKF_vel_z',
+
+    'Monit_90_S2': 'EKF_flags',
+
+    # =========
+    # VTOL
+    # =========
+    'Monit_13_S1': 'poscontrol_state',
+    'Monit_13_S2': 'transition_stage',
+    'Monit_53_S2': 'in_transition',
+    'Monit_53_S3': 'hold_stabilize',
+    'Monit_53_S4': 'hold_hover',
+    'Monit_53_S5': 'PhaseOne_timer_finished',
+    'Monit_53_S6': 'in_vtol_takeoff',
+    'Monit_53_S7': 'in_vtol_land',
+    'Monit_53_S8': 'assisted_flight',
+    'Monit_53_S9': 'relax_auto',
+
+    'Monit_14_S1': 'VTOL_roll_reference',
+    'Monit_14_S2': 'VTOL_pitch_reference',
+    'Monit_15_S1': 'VTOL_yaw_reference',
+
+    'Monit_16_S1': 'pos_target_z',
+    'Monit_16_S2': 'vel_desired_xy',
+    'Monit_17_S1': 'unused_17_S1',         # reservado (aparece no quadro)
+
+    'Monit_53_S18': 'ForceActuationEnable',
+    'Monit_53_S17': 'KillSwitch',
+
+    # =========
+    # RC e Sistema
+    # =========
+    'Monit_1_S1' : 'SystemCounter',
+    'Monit_76_S2': 'Voltage',               # Va2bVDC_PA1 no slide
+    'Monit_59_S3': 'OpMode_PA1',
+    'Monit_59_S2': 'Operation_Mode',
+    'Monit_59_S1': 'OpMode_from_pilot',
+    'Monit_18_S2': 'external_FS',
+    'Monit_53_S545': 'internal_FS',         # índice incomum no slide; mantemos etiqueta
+    'Monit_19_S2': 'GroundLevel',
+    'Monit_15_S2': 'RPACheckSum',
+    'Monit_53_S34': 'From_takeoff',
+    'Monit_124_S4': 'MPDC_isUp',
+    'Monit_53_S20': 'disarm_radio',
+    'Monit_53_S21': 'FW_Manual',
+    'Monit_124_S3': 'ADC_isUP',
+    'Monit_53_S12': 'CriticalLandStage',
+    'Monit_53_S10': 'ManualTransition_RPA',
+
+    # =========
+    # Read Counter
+    # =========
+    'Monit_84_S1': 'Mag_ReadCounter',
+    'Monit_95_S2': 'EDC_ReadCounter',
+    'Monit_85_S2': 'GNSS2_Pos_ReadCounter',
+    'Monit_77_S1': 'GNSS2_Vel_ReadCounter',
+    'Monit_86_S1': 'GNSS1_Pos_ReadCounter',
+    'Monit_86_S2': 'GNSS1_Vel_ReadCounter',
+    'Monit_87_S1': 'RC_ReadCounter',
+    'Monit_98_S1': 'RC_ReadCounter_2',
+
+    # =========
+    # EDC / Engine / Fuel
+    # =========
+    'Monit_98_S2': 'RPM',                   # Rotation_PA1
+    'Monit_81_S1': 'CHT',
+    'Monit_76_S1': 'FuelLevel_dig',         # no slide EDC: FuelLevelAnalog/Digital; padronizamos
+    'Monit_124_S8': 'FuelLevel_anag',
+    'Monit_124_S5': 'EDC_isUp',
+
+    # =========
+    # Others Velocities / Pressão dinâmica -> EAS
+    # =========
+    'Monit_88_S1': 'ADC_DynamicPressure',
+
+    # =========
+    # DCM
+    # =========
+    'Monit_94_S1': 'DCM_roll',
+    'Monit_94_S2': 'DCM_pitch',
+    'Monit_95_S1': 'DCM_yaw',
+}
+
+DICT_XPLANNER = {
+    '?': 'ModoVoo',
+    'P': 'Pitch',
+    'R': 'Roll',
+    'Y': 'Yaw',
+    'H': 'QNH',
+    'S': 'ASI',
+    'Q': 'QNE',
+    'u': 'WSI',
+    'o': 'WindDirection',
+    '%': 'GNSS_Select',
+    'n': 'RPM',
+    't': 'CHT',
+    's': 'FuelLevel_dig',
+    '¢': 'AT',
+    '=': 'FuelLevel_anag',
+    'N': 'Lat',
+    'E': 'Long',
+    'V': 'VSI',
+    'U': 'GSI',
+    'D': 'Alt_geoidal',
+    'O': 'Path_angle',
+    'I': 'RTK_Status',
+    'G': 'Idade',
+    'F': 'Sat_use',
+    'h': 'Incert_Long',
+    'v': 'Incert_pos_z',
+    'y': 'Spoofing',
+    'x': 'Jamming',
+    'a': 'Vbat',
+    'e': 'Filt_VDC',
+    'b': 'Porcent_bat',
+    "'": 'ForceG',
+    "¨": 'IsFlying',
+    '@': 'N_ForcedLanding',
+    'c': 'IsForcedLanding',
+    'd': 'IsVTOL',
+    'l': 'Elevator',
+    'r': 'Aileron',
+    'f': 'FailNumber',
+    'p': 'ProtectionNumber',
+    'º': 'VTOL_vbat',
+    'B': 'AFGNS_Select',
+}
+
+Modo de voo FW:
+-1 RC Mode
+0  Subir (RTL)
+1  Manual (FW150) 
+2  SEMI
+3  Survey
+4  Tracking
+5  Orbit
+8  Landing
+9  TakeOff
+
+Modo de voo RW:
+0 Stabilize
+1 IDLE (Solo ou em voo)
+2 AUTO
+3 Forced Land
+
+SOLUCAO ERRITEKA XRTK
+
+0 No solution
+1 Dead reckoning
+2 autonomous
+3 precise
+4 differential
+5 RTK float
+RTJ fixed
+7 Outro
+-1 ins
+Se as condições nao forem atendidas envia -1
+CGA.quality
+GNS.posMode
+
+
+# AHRSs
+    28: 'Roll',
+    29: 'Pitch',
+    30: 'Yaw',
+    19: 'Pos_x_cm',
+    20: 'Pos_y_cm',
+    21: 'Pos_z_cm',
+    22: 'Vel_x_cm',
+    23: 'Vel_y_cm',
+    24: 'Vel_z_cm',
+    117: 'Declination',
+    25: 'Ax',
+    26: 'Ay',
+    27: 'Az',
+    31: 'q',
+    32: 'p',
+    33: 'r',
+    52: 'Mx',
+    53: 'My',
+    55: 'Mz',
+    36: 'Altitude',
+
+    # GNSS
+    34: 'Lat',
+    35: 'Long',
+    36: 'QNH',
+
+    113: 'VelN',
+    114: 'VelE',
+    115: 'VelU',
+
+    # EKF
+    45: 'EKF_FailSafe',
+    39: 'EKF_Heath',
+
+    # ADU
+    44: 'ASI',
+
+    # EDC
+    107: 'RPM',
+    111: 'CHT',
+    55: 'FuelLevel_dig',
+
+    # FW controls
+    67: 'Rudder',
+    68: 'Elevator',
+    69: 'Engine_input',
+    70: 'Aileron',
+
+    # Sistema
+    76: 'ModoVoo',
+    74: 'FailNumber',
+    75: 'ProtectionNumber',
+    78: 'IsFlying',
+    73: 'Parachute',
+    56: 'Vbat',
+    118: 'GroundLevel',
+    16: 'OnGround',
+    106: 'FW_manual',
+
+    # Referência
+    13: 'FW_Alt_ref',
+    14: 'WindCorrectedCourse',
+    65: 'WSI',
+    15: 'Pitch_ref',
+
+    # State
+    87: 'PosControl_State',
+    88: 'transition_stage',
+
+    # RC
+    2: 'RC1',
+    3: 'RC2',
+    4: 'RC3',
+    5: 'RC4',
+    6: 'RC5',
+    7: 'RC6',
+    8: 'RC7',
+    9: 'RC8',
+    10: 'RC9',
+    11: 'RC10',
+    37: 'RC11',
+    38: 'RC12',
+    12: 'RC13'}
+
+Códigos RTL
+	
+Código	FL FailNumber (forced landing)	Fail Number (Paraquedas)	Protection Number (RTL)
+2^0	Forced Landing pelo Cockpit	Paraquedas pelo Cockpit	--
+2^1	--	--	Tensão de Bateria
+2^2	--	Velocidade de stall	Perca de comunicação
+2^3	--	Alta velocidade	Eletronic fence
+2^4	--	Over roll	Falha GNSS
+2^5	--	over pitch	Vento forte
+2^6	Pitot obstruído	Pitot obstruído	Velocidade de Stall
+2^7	Baixa altitude	Baixa Altitude	Over roll
+2^8	--	Alto erro de referência de Altitude	Over pitch
+2^9	--	Taxa de descida perigosa	Alto erro de referência de Altitude
+2^10	Baixa tensão de bateria	Tensão baixa de bateria	--
+2^11	Falha de sensor	Falha de sensor	--
+2^12	Baixo número de satélites gps	Baixo número de satélites gps	--
+2^13	--	Eletronic fence	--
+2^14	--	Baixa taxa de subida (Precisa confirmar)	--
+2^15	Proteção contra ataques	Proteção contra ataques	--
+2^16	secundaryCalledDuringCriticalStage	--	--
+2^17	--	Paraquedas pelo RC	--
+2^18	--	Paraquedas pelo switch	--
+2^19	--	Timeout de subida na decolagem	--
+2^20	Timeout de transição	Timeout de transição	--
+2^21	Timeout de início de transição	--	--

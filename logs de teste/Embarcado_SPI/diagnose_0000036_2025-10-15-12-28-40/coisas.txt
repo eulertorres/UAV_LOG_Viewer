@@ -1,0 +1,10 @@
+10.6 queda. Perda de trajetória. PTKU V2 Endurance 1 de setembro voo dia 12. Volta para a demo e coloca NGCSW 3.102.0. Bug trava de as. 26 de set inicio do endurance. Aeronave se perdendo, piorando. Tendencia de comando para a esquerda. Atualização de imagem AMSSW 1.38.0 RC + Asas SN10.6. Voa bem. Aeronave cai
+
+10.7 e 11.3 - PTKU V1
+
+10.5 - 12/ago Erda 10.4 do skydroid, mas agr com Great. Troca ACNLU.17 set começa colocar PTKU V2. 6out firmware 1.38.0 RC (Multilogs validado na 10.7) 
+
+Saida de rota saturam em aileron. Não na mixagem;
+
+10.7 tmb tinha motor novo vtol
+
