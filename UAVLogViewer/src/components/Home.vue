@@ -66,10 +66,11 @@ export default {
     name: 'Home',
     created () {
         this.$eventHub.$on('messagesDoneLoading', this.extractFlightData)
-        this.state.messages = {}
-        this.state.timeAttitude = []
-        this.state.timeAttitudeQ = []
-        this.state.currentTrajectory = []
+        if (!this.state.externalDataInjected) {
+            this.resetState()
+        } else {
+            this.prepareExternalState()
+        }
         isOnline().then(a => { this.state.isOnline = a })
     },
     beforeDestroy () {
@@ -82,6 +83,70 @@ export default {
         }
     },
     methods: {
+        resetState () {
+            this.state.messages = {}
+            this.state.timeAttitude = []
+            this.state.timeAttitudeQ = []
+            this.state.currentTrajectory = []
+        },
+
+        prepareExternalState () {
+            if (!Array.isArray(this.state.flightModeChanges)) {
+                this.state.flightModeChanges = []
+            }
+
+            if (!this.state.trajectorySources || this.state.trajectorySources.length === 0) {
+                if (this.state.trajectorySource) {
+                    this.state.trajectorySources = [this.state.trajectorySource]
+                } else {
+                    this.state.trajectorySources = []
+                }
+            }
+
+            if (!Array.isArray(this.state.currentTrajectory) || this.state.currentTrajectory.length === 0) {
+                const source = this.state.trajectorySource
+                if (source && this.state.trajectories && this.state.trajectories[source]) {
+                    this.state.currentTrajectory = this.state.trajectories[source].trajectory || []
+                    this.state.timeTrajectory = this.state.trajectories[source].timeTrajectory || {}
+                } else {
+                    this.state.currentTrajectory = []
+                    this.state.timeTrajectory = {}
+                }
+            }
+
+            if (this.state.mapAvailable === undefined) {
+                this.state.mapAvailable = this.state.currentTrajectory.length > 0
+            }
+
+            if (this.state.mapAvailable && this.state.showMap === undefined) {
+                this.state.showMap = true
+            }
+
+            if (!this.state.attitudeSources) {
+                this.state.attitudeSources = { quaternions: [], eulers: [] }
+            }
+
+            if (!this.state.attitudeSource && this.state.attitudeSources.eulers.length > 0) {
+                this.state.attitudeSource = this.state.attitudeSources.eulers[0]
+            }
+
+            if (!this.state.timeAttitude) {
+                this.state.timeAttitude = {}
+            }
+
+            if (!this.state.timeAttitudeQ) {
+                this.state.timeAttitudeQ = {}
+            }
+
+            if (!this.state.metadata) {
+                this.state.metadata = { startTime: new Date().toISOString() }
+            }
+
+            if (this.state.processDone === undefined) {
+                this.state.processDone = true
+            }
+        },
+
         extractFlightData () {
             if (this.dataExtractor === null) {
                 if (this.state.logType === 'tlog') {

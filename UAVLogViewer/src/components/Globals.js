@@ -64,5 +64,26 @@ export const store = {
     commit: _COMMIT_.slice(0, 6),
     /* global _BUILDDATE_ */
     buildDate: _BUILDDATE_,
-    childPlots: []
+    childPlots: [],
+    externalDataInjected: false
+}
+
+function mergeExternalState (external) {
+    if (!external || typeof external !== 'object') {
+        return
+    }
+
+    for (const [key, value] of Object.entries(external)) {
+        store[key] = value
+    }
+
+    store.externalDataInjected = true
+}
+
+if (typeof window !== 'undefined') {
+    if (window.__UAVLOGVIEWER_PRELOADED_STATE__) {
+        mergeExternalState(window.__UAVLOGVIEWER_PRELOADED_STATE__)
+    }
+
+    window.__applyUavLogViewerState__ = mergeExternalState
 }

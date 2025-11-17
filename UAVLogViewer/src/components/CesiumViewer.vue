@@ -109,7 +109,8 @@ export default {
             startTimeMs: 0,
             lastEmitted: 0,
             colorCoder: null,
-            selectedColorCoder: 'Mode'
+            selectedColorCoder: 'Mode',
+            externalTimeSetter: null
         }
     },
     components: {
@@ -130,9 +131,22 @@ export default {
         this.state.mapLoading = true
     },
     beforeDestroy () {
+        if (typeof window !== 'undefined' && window.__setExternalCesiumTime__ === this.externalTimeSetter) {
+            delete window.__setExternalCesiumTime__
+        }
         this.$eventHub.$off('hoveredTime')
     },
     mounted () {
+        if (typeof window !== 'undefined') {
+            this.externalTimeSetter = (ms) => {
+                if (!this.viewer) {
+                    return
+                }
+                this.viewer.clock.shouldAnimate = false
+                this.showAttitude(ms)
+            }
+            window.__setExternalCesiumTime__ = this.externalTimeSetter
+        }
         // create eniro, statkart, and openseamap providers
         this.asyncSetup()
     },
@@ -372,10 +386,23 @@ export default {
             /*
             * Second step of setup, happens after the height of the starting point has been returned by Cesium
             * */
-            this.state.trajectorySource = this.state.trajectorySources[0]
-            this.loadTrajectory(this.state.trajectorySource)
+            if (!this.state.externalDataInjected) {
+                this.state.trajectorySource = this.state.trajectorySources[0]
+                this.loadTrajectory(this.state.trajectorySource)
+            } else {
+                if (!this.state.trajectorySource && this.state.trajectorySources.length > 0) {
+                    this.state.trajectorySource = this.state.trajectorySources[0]
+                }
+                const source = this.state.trajectorySource
+                if (source && this.state.trajectories && this.state.trajectories[source]) {
+                    this.state.currentTrajectory = this.state.trajectories[source].trajectory || []
+                    this.state.timeTrajectory = this.state.trajectories[source].timeTrajectory || {}
+                }
+            }
             this.state.heightOffset = 0
-            this.state.heightOffset = updatedPositions[0].height
+            if (updatedPositions && updatedPositions.length > 0 && updatedPositions[0].height !== undefined) {
+                this.state.heightOffset = updatedPositions[0].height
+            }
             this.processTrajectory(this.state.currentTrajectory)
             this.addModel()
             this.updateAndPlotTrajectory()
@@ -1361,6 +1388,14 @@ export default {
             return require('../assets/plane.glb').default
         },
         loadTrajectory (source) {
+            if (this.state.externalDataInjected) {
+                if (this.state.trajectories && this.state.trajectories[source]) {
+                    this.state.currentTrajectory = this.state.trajectories[source].trajectory || []
+                    this.state.timeTrajectory = this.state.trajectories[source].timeTrajectory || {}
+                }
+                this.processTrajectory()
+                return
+            }
             this.waitForMessages([source]).then(() => {
                 let dataExtractor = null
                 if (this.state.logType === 'tlog') {
@@ -1376,6 +1411,10 @@ export default {
             })
         },
         loadAttitude (source) {
+            if (this.state.externalDataInjected) {
+                this.addModel()
+                return
+            }
             this.waitForMessages([source]).then(() => {
                 let dataExtractor = null
                 if (this.state.logType === 'tlog') {
