@@ -377,6 +377,10 @@ class TelemetryApp(QMainWindow):
         if self.all_plots_tab: self.all_plots_tab.load_dataframe(self.df)
         # O custom_plot_tab já recebe todos os logs no on_loading_finished
 
+        if self.tabs and self.standard_plots_tab:
+            self.tabs.setCurrentWidget(self.standard_plots_tab)
+            self.standard_plots_tab.show_position_plot()
+
         self.plot_map_route() # Recria o mapa
         self.setup_timeline()
 

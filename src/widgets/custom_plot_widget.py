@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QGroupBox,
-    QComboBox, QInputDialog, QLabel, QListWidget, QSizePolicy
+    QComboBox, QInputDialog, QLabel, QListWidget, QSizePolicy, QCheckBox
 )
 import pandas as pd
 import numpy as np
@@ -12,6 +12,7 @@ from matplotlib.figure import Figure
 
 class CustomPlotWidget(QWidget):
     NEW_AXIS_OPTION = "<Novo Eixo>"
+    INDEX_X_OPTION = "<Índice da amostra>"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -34,19 +35,30 @@ class CustomPlotWidget(QWidget):
         self.log_source_combo.currentTextChanged.connect(self._on_log_source_changed)
         
         self.column_combo = QComboBox()
+        self.x_column_combo = QComboBox()
         self.axis_combo = QComboBox()
-        
+
         btn_add_plot = QPushButton("Adicionar ao Gráfico")
         btn_add_plot.clicked.connect(self.add_plot)
-        
+
         add_data_layout.addWidget(QLabel("Fonte do Log:"))
         add_data_layout.addWidget(self.log_source_combo, 1)
         add_data_layout.addWidget(QLabel("Variável:"))
         add_data_layout.addWidget(self.column_combo, 1)
+        add_data_layout.addWidget(QLabel("Eixo X:"))
+        add_data_layout.addWidget(self.x_column_combo, 1)
         add_data_layout.addWidget(QLabel("Eixo:"))
         add_data_layout.addWidget(self.axis_combo, 1)
         add_data_layout.addWidget(btn_add_plot)
         controls_layout.addLayout(add_data_layout)
+
+        interpolation_layout = QHBoxLayout()
+        self.interpolation_checkbox = QCheckBox("Interpolar (ligar os pontos)")
+        self.interpolation_checkbox.setChecked(True)
+        self.interpolation_checkbox.stateChanged.connect(self.update_plot)
+        interpolation_layout.addWidget(self.interpolation_checkbox)
+        interpolation_layout.addStretch(1)
+        controls_layout.addLayout(interpolation_layout)
 
         manage_layout = QHBoxLayout()
         btn_set_title = QPushButton("Definir Título")
@@ -106,9 +118,14 @@ class CustomPlotWidget(QWidget):
         
         handles, labels = [], []
 
+        use_lines = self.interpolation_checkbox.isChecked()
+
         for plot_info in self.plotted_data:
-            log_name, col, axis_idx = plot_info['log'], plot_info['col'], plot_info['axis_idx']
-            
+            log_name = plot_info['log']
+            col = plot_info['col']
+            axis_idx = plot_info['axis_idx']
+            x_col = plot_info.get('x_col', self.INDEX_X_OPTION)
+
             if axis_idx not in axis_map:
                 new_ax = host_ax.twinx()
                 new_ax.spines['right'].set_position(('outward', 60 * (len(axis_map) - 1)))
@@ -118,21 +135,59 @@ class CustomPlotWidget(QWidget):
             ax = axis_map[axis_idx]
             df_to_plot = self.log_data[log_name]
             color = next(colors)
-            
+
             line_label = f"{col} ({log_name})"
-            
-            # Garante que seja uma linha sólida ('-') e sem marcadores de ponto.
-            line, = ax.plot(df_to_plot.index.to_numpy(), df_to_plot[col].to_numpy(), 
-                            label=line_label, color=color, linestyle='-', marker=None)
-            
+
+            if col not in df_to_plot.columns:
+                continue
+
+            if x_col == self.INDEX_X_OPTION:
+                valid = df_to_plot[[col]].dropna()
+                x_data = valid.index.to_numpy()
+            elif x_col in df_to_plot.columns:
+                valid = df_to_plot[[x_col, col]].dropna()
+                if valid.empty:
+                    continue
+                x_data = valid[x_col].to_numpy()
+            else:
+                continue
+
+            if valid.empty:
+                continue
+
+            y_data = valid[col].to_numpy()
+
+            linestyle = '-' if use_lines else 'None'
+            marker = None if use_lines else 'o'
+
+            line, = ax.plot(x_data, y_data,
+                            label=line_label, color=color, linestyle=linestyle, marker=marker)
+
             handles.append(line)
             labels.append(line_label)
             ax.set_ylabel(self.axis_names[axis_idx])
-            
-        host_ax.set_xlabel("Índice da Amostra (Tempo Relativo)")
-        host_ax.legend(handles, labels, loc='best')
+
+        # Define o label do eixo X de acordo com as séries ativas
+        if self.plotted_data:
+            unique_x = {p.get('x_col', self.INDEX_X_OPTION) for p in self.plotted_data}
+            if len(unique_x) == 1:
+                only_x = unique_x.pop()
+                if only_x == self.INDEX_X_OPTION:
+                    host_ax.set_xlabel("Índice da Amostra")
+                else:
+                    host_ax.set_xlabel(only_x)
+            else:
+                host_ax.set_xlabel("Variável X (individual por série)")
+        else:
+            host_ax.set_xlabel("")
+        if handles:
+            host_ax.legend(handles, labels, loc='best')
+        else:
+            host_ax.text(0.5, 0.5, 'Nenhum dado válido para plotar.',
+                         transform=host_ax.transAxes, ha='center', va='center',
+                         color='gray', fontsize=10)
         host_ax.grid(True, linestyle='--', alpha=0.6)
-        
+
         self.figure.tight_layout(rect=[0, 0.03, 1, 0.95])
         self.canvas.draw_idle()
 
@@ -155,10 +210,16 @@ class CustomPlotWidget(QWidget):
         
     def _on_log_source_changed(self, log_name):
         self.column_combo.clear()
+        self.x_column_combo.clear()
+        self.x_column_combo.addItem(self.INDEX_X_OPTION)
         if log_name and log_name in self.log_data:
             df = self.log_data[log_name]
             cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and "Timestamp" not in c]
             self.column_combo.addItems(sorted(cols))
+
+            x_cols = {c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])}
+            for col in sorted(x_cols):
+                self.x_column_combo.addItem(col)
 
     def _reset_axes(self):
         self.axis_combo.clear()
@@ -174,10 +235,17 @@ class CustomPlotWidget(QWidget):
     def add_plot(self):
         log_name = self.log_source_combo.currentText()
         col = self.column_combo.currentText()
+        x_col = self.x_column_combo.currentText()
         target_axis_name = self.axis_combo.currentText()
 
         if not log_name or not col: return
-        if any(p['log'] == log_name and p['col'] == col for p in self.plotted_data): return
+        if any(
+            p['log'] == log_name and
+            p['col'] == col and
+            p.get('x_col', self.INDEX_X_OPTION) == x_col
+            for p in self.plotted_data
+        ):
+            return
 
         axis_idx = -1
         if target_axis_name == self.NEW_AXIS_OPTION:
@@ -192,10 +260,14 @@ class CustomPlotWidget(QWidget):
             axis_name = target_axis_name
             axis_idx = self.axis_names.index(axis_name)
 
-        plot_info = {'log': log_name, 'col': col, 'axis_idx': axis_idx}
+        plot_info = {'log': log_name, 'col': col, 'axis_idx': axis_idx, 'x_col': x_col}
         self.plotted_data.append(plot_info)
-        
-        item_text = f"'{col}' (de {log_name}) no eixo '{self.axis_names[axis_idx]}'"
+
+        if x_col == self.INDEX_X_OPTION:
+            x_desc = "índice"
+        else:
+            x_desc = x_col
+        item_text = f"'{col}' x '{x_desc}' (de {log_name}) no eixo '{self.axis_names[axis_idx]}'"
         self.list_widget.addItem(item_text)
         
         self.update_plot()
