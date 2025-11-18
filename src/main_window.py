@@ -6,8 +6,6 @@ import sys
 import os
 import io
 import time
-import json
-import math
 import shutil
 from datetime import datetime
 
@@ -101,15 +99,12 @@ class TelemetryApp(QMainWindow):
         self.view_toggle_checkbox = None
         self.map_stack = None
         self.cesiumWidget = None
-        self.cesium_state = None
-        self.cesium_start_timestamp = None
-        self.cesium_assets_ready = False
-        self.cesium_dist_path = ""
-        self.cesium_current_html = ""
-        self.cesium_ready = False
+        self.placeholder_html_path = ""
+        self.planet_placeholder_asset = 'earth_placeholder.svg'
 
         self.copy_assets_to_server(icone_aviao)
         self.copy_assets_to_server(icone_seta)
+        self.copy_assets_to_server(self.planet_placeholder_asset)
 
         self.setup_ui()
 
@@ -158,9 +153,9 @@ class TelemetryApp(QMainWindow):
         self.btn_save_pdf.setEnabled(False)
         top_controls_layout.addWidget(self.btn_save_pdf)
 
-        self.view_toggle_checkbox = QCheckBox("Visualização 3D (Cesium)")
+        self.view_toggle_checkbox = QCheckBox("Visualização 3D")
         self.view_toggle_checkbox.stateChanged.connect(self.on_view_toggle_changed)
-        self.view_toggle_checkbox.setEnabled(False)
+        self.view_toggle_checkbox.setEnabled(True)
         top_controls_layout.addWidget(self.view_toggle_checkbox)
 
         # Adiciona controles superiores ao layout principal
@@ -198,7 +193,7 @@ class TelemetryApp(QMainWindow):
         self.mapWidget = QWebEngineView()
         self.mapWidget.loadFinished.connect(self.on_map_load_finished)
         self.cesiumWidget = QWebEngineView()
-        self.cesiumWidget.loadFinished.connect(self.on_cesium_load_finished)
+        self.cesiumWidget.loadFinished.connect(self.on_three_d_view_load_finished)
 
         self.map_stack = QStackedWidget()
         self.map_stack.addWidget(self.mapWidget)
@@ -350,16 +345,12 @@ class TelemetryApp(QMainWindow):
         if self.view_toggle_checkbox:
             self.view_toggle_checkbox.blockSignals(True)
             self.view_toggle_checkbox.setChecked(False)
-            self.view_toggle_checkbox.setEnabled(False)
             self.view_toggle_checkbox.blockSignals(False)
 
         if self.map_stack:
             self.map_stack.setCurrentWidget(self.mapWidget)
 
-        self.cleanup_cesium_html()
-        self.cesium_state = None
-        self.cesium_ready = False
-        self.cesium_start_timestamp = None
+        self.cleanup_placeholder_html()
 
         if self.standard_plots_tab: self.standard_plots_tab.load_dataframe(pd.DataFrame())
         if self.custom_plot_tab: self.custom_plot_tab.reload_data({})
@@ -384,17 +375,7 @@ class TelemetryApp(QMainWindow):
         self.view_toggle_checkbox.blockSignals(True)
         self.view_toggle_checkbox.setChecked(False)
         self.view_toggle_checkbox.blockSignals(False)
-        self.cesium_state = None
-        self.cesium_ready = False
-        self.cesium_start_timestamp = None
-        self.cleanup_cesium_html()
-
-        cesium_state = self.build_cesium_state_from_dataframe()
-        if cesium_state:
-            self.cesium_state = cesium_state
-            self.view_toggle_checkbox.setEnabled(True)
-        else:
-            self.view_toggle_checkbox.setEnabled(False)
+        self.cleanup_placeholder_html()
 
     # --- Funções do Mapa e Timeline ---
     
@@ -410,30 +391,18 @@ class TelemetryApp(QMainWindow):
             self.map_is_ready = False
             print("ERRO: VISHII deu ruim o HTML do mapa, HEEELP aaaaaaaa")
 
-    def on_cesium_load_finished(self, ok):
-        self.cesium_ready = bool(ok)
-        if ok and not self.df.empty and self.cesium_start_timestamp is not None:
-            try:
-                current_ts = self.df['Timestamp'].iloc[self.timeline_slider.value()]
-                self.sync_cesium_time(current_ts)
-            except Exception:
-                pass
+    def on_three_d_view_load_finished(self, ok):
+        if ok:
+            self.statusBar().showMessage("Visualização 3D carregada!", 3000)
+        else:
+            self.statusBar().showMessage("Falha ao carregar visualização 3D.", 5000)
 
     def on_view_toggle_changed(self, state):
         if self.view_toggle_checkbox is None:
             return
         checked = Qt.CheckState(state) == Qt.CheckState.Checked
         if checked:
-            if not self.cesium_state:
-                cesium_state = self.build_cesium_state_from_dataframe()
-                if not cesium_state:
-                    self.view_toggle_checkbox.blockSignals(True)
-                    self.view_toggle_checkbox.setChecked(False)
-                    self.view_toggle_checkbox.blockSignals(False)
-                    QMessageBox.warning(self, "Viewer 3D", "Não foi possível preparar os dados para o viewer 3D.")
-                    return
-                self.cesium_state = cesium_state
-            if not self.show_cesium_view():
+            if not self.show_placeholder_3d_view():
                 self.view_toggle_checkbox.blockSignals(True)
                 self.view_toggle_checkbox.setChecked(False)
                 self.view_toggle_checkbox.blockSignals(False)
@@ -600,193 +569,97 @@ class TelemetryApp(QMainWindow):
         self.map_is_ready = False
         self.mapWidget.load(QUrl(url_map_html))
 
-    def cleanup_cesium_html(self):
-        if self.cesium_current_html and os.path.exists(self.cesium_current_html):
+    def cleanup_placeholder_html(self):
+        if self.placeholder_html_path and os.path.exists(self.placeholder_html_path):
             try:
-                os.remove(self.cesium_current_html)
+                os.remove(self.placeholder_html_path)
             except OSError:
                 pass
-        self.cesium_current_html = ""
+        self.placeholder_html_path = ""
 
-    def ensure_cesium_assets(self):
-        if self.cesium_assets_ready and os.path.isdir(self.cesium_dist_path):
-            return True
-        project_root = os.path.dirname(os.path.abspath(__file__))
-        dist_dir = os.path.join(os.path.dirname(project_root), 'UAVLogViewer', 'dist')
-        if not os.path.isdir(dist_dir):
-            QMessageBox.warning(self, "Viewer 3D", "Build do UAVLogViewer não encontrado. Execute npm run build em UAVLogViewer.")
-            return False
-        dest_dir = os.path.join(self.map_server.get_temp_dir(), 'cesium_dist')
+    def create_placeholder_3d_html(self):
         try:
-            if os.path.isdir(dest_dir):
-                shutil.rmtree(dest_dir)
-            shutil.copytree(dist_dir, dest_dir)
-        except Exception as exc:
-            QMessageBox.warning(self, "Viewer 3D", f"Erro ao preparar assets do Cesium: {exc}")
-            return False
-        self.cesium_dist_path = dest_dir
-        self.cesium_assets_ready = True
-        return True
-
-    def render_cesium_html(self, state_data):
-        if not self.ensure_cesium_assets():
-            return ""
-        index_path = os.path.join(self.cesium_dist_path, 'index.html')
-        if not os.path.exists(index_path):
-            return ""
-        try:
-            with open(index_path, 'r', encoding='utf-8') as f:
-                html = f.read()
-            payload = json.dumps(state_data)
-            injection = f"<script>window.__UAVLOGVIEWER_PRELOADED_STATE__ = {payload};</script>"
-            insert_at = html.find('<script')
-            if insert_at != -1:
-                html = html[:insert_at] + injection + '\n' + html[insert_at:]
-            else:
-                html = html + injection
-            output_name = f"cesium_view_{int(time.time()*1000)}.html"
+            self.copy_assets_to_server(self.planet_placeholder_asset)
+            port = self.map_server.get_port()
+            placeholder_url = f"http://127.0.0.1:{port}/{self.planet_placeholder_asset}"
+            html_content = f"""
+<!DOCTYPE html>
+<html lang='pt-BR'>
+<head>
+  <meta charset='utf-8'>
+  <title>Visualização 3D</title>
+  <style>
+    body {{
+      margin: 0;
+      background: radial-gradient(circle at top, #0d1b2a, #000814);
+      color: #f8f9fa;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }}
+    .viewer {{
+      text-align: center;
+      padding: 24px;
+      max-width: 640px;
+    }}
+    .viewer img {{
+      width: 80%;
+      max-width: 420px;
+      filter: drop-shadow(0 0 25px rgba(0, 150, 255, 0.45));
+      animation: slow-rotate 20s linear infinite;
+    }}
+    @keyframes slow-rotate {{
+      from {{ transform: rotateY(0deg); }}
+      to {{ transform: rotateY(360deg); }}
+    }}
+    .tag {{
+      display: inline-block;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(0, 150, 255, 0.15);
+      border: 1px solid rgba(0, 150, 255, 0.3);
+      margin-bottom: 12px;
+      font-size: 13px;
+      letter-spacing: 1px;
+    }}
+    p {{
+      color: #ced4da;
+      font-size: 15px;
+      line-height: 1.4;
+    }}
+  </style>
+</head>
+<body>
+  <div class='viewer'>
+    <div class='tag'>Modo 3D experimental</div>
+    <img src='{placeholder_url}' alt='Planeta 3D'>
+    <p>Este modo 3D ainda é um protótipo independente inspirado no projeto UAVLogViewer.</p>
+    <p>Por enquanto exibimos uma prévia do planeta para testar a troca entre os modos 2D e 3D.</p>
+  </div>
+</body>
+</html>
+"""
+            output_name = f"planet_preview_{int(time.time()*1000)}.html"
             output_path = os.path.join(self.map_server.get_temp_dir(), output_name)
-            with open(output_path, 'w', encoding='utf-8') as out:
-                out.write(html)
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
             return output_path
         except Exception as exc:
-            QMessageBox.warning(self, "Viewer 3D", f"Erro ao gerar HTML do Cesium: {exc}")
+            QMessageBox.warning(self, "Visualização 3D", f"Não foi possível preparar o preview 3D: {exc}")
             return ""
 
-    def show_cesium_view(self):
-        if not self.cesium_state:
-            return False
-        html_path = self.render_cesium_html(self.cesium_state)
+    def show_placeholder_3d_view(self):
+        html_path = self.create_placeholder_3d_html()
         if not html_path:
             return False
-        self.cleanup_cesium_html()
-        self.cesium_current_html = html_path
+        self.cleanup_placeholder_html()
+        self.placeholder_html_path = html_path
         port = self.map_server.get_port()
         url = QUrl(f"http://127.0.0.1:{port}/{os.path.basename(html_path)}")
-        self.cesium_ready = False
         self.cesiumWidget.load(url)
         return True
-
-    def build_cesium_state_from_dataframe(self):
-        if self.df.empty:
-            return None
-        required_cols = {'Timestamp', 'Latitude', 'Longitude'}
-        if not required_cols.issubset(set(self.df.columns)):
-            return None
-        altitude_column = 'AltitudeAbs' if 'AltitudeAbs' in self.df.columns else 'Altitude'
-        if altitude_column not in self.df.columns:
-            return None
-
-        columns = ['Timestamp', 'Latitude', 'Longitude', altitude_column]
-        for axis in ['Roll', 'Pitch', 'Yaw']:
-            if axis in self.df.columns:
-                columns.append(axis)
-
-        df = self.df[columns].dropna(subset=['Timestamp', 'Latitude', 'Longitude', altitude_column]).copy()
-        if df.empty:
-            return None
-
-        df.sort_values('Timestamp', inplace=True)
-        self.cesium_start_timestamp = None
-        try:
-            df['Timestamp'] = pd.to_datetime(df['Timestamp'])
-        except Exception:
-            return None
-
-        start_row = df.iloc[0]
-        self.cesium_start_timestamp = start_row['Timestamp']
-        start_altitude = float(start_row[altitude_column])
-
-        trajectory = []
-        time_trajectory = {}
-        time_attitude = {}
-
-        roll_available = 'Roll' in df.columns
-        pitch_available = 'Pitch' in df.columns
-        yaw_available = 'Yaw' in df.columns
-
-        for _, row in df.iterrows():
-            timestamp = row['Timestamp']
-            lat = float(row['Latitude'])
-            lon = float(row['Longitude'])
-            alt = float(row[altitude_column])
-            delta_ms = int((timestamp - self.cesium_start_timestamp).total_seconds() * 1000)
-            altitude_rel = alt - start_altitude
-            trajectory.append([lon, lat, altitude_rel, delta_ms])
-            time_trajectory[delta_ms] = [lon, lat, altitude_rel / 1000.0, delta_ms]
-
-            if roll_available and pitch_available and yaw_available:
-                roll = row.get('Roll', None)
-                pitch = row.get('Pitch', None)
-                yaw = row.get('Yaw', None)
-                if pd.notna(roll) and pd.notna(pitch) and pd.notna(yaw):
-                    time_attitude[delta_ms] = [
-                        math.radians(float(roll)),
-                        math.radians(float(pitch)),
-                        math.radians(float(yaw))
-                    ]
-
-        if not trajectory:
-            return None
-
-        max_time = trajectory[-1][3]
-        start_time_iso = self.cesium_start_timestamp.to_pydatetime().isoformat()
-
-        state = {
-            'externalDataInjected': True,
-            'mapAvailable': True,
-            'showMap': True,
-            'mapLoading': False,
-            'trajectorySources': ['python'],
-            'trajectorySource': 'python',
-            'trajectories': {
-                'python': {
-                    'trajectory': trajectory,
-                    'timeTrajectory': time_trajectory
-                }
-            },
-            'currentTrajectory': trajectory,
-            'timeTrajectory': time_trajectory,
-            'timeAttitude': time_attitude,
-            'timeAttitudeQ': {},
-            'attitudeSources': {'eulers': ['python'], 'quaternions': []},
-            'attitudeSource': 'python',
-            'vehicle': 'plane',
-            'metadata': {'startTime': start_time_iso},
-            'flightModeChanges': [],
-            'mission': [],
-            'fences': [],
-            'processDone': True,
-            'processStatus': 'Processed!',
-            'plotOn': False,
-            'messageTypes': {},
-            'messages': {},
-            'events': [],
-            'showTrajectory': True,
-            'showClickableTrajectory': False,
-            'showWaypoints': False,
-            'heightOffset': 0.0,
-            'modelScale': 10,
-            'cameraType': 'follow',
-            'isOnline': False,
-            'timeRange': [0, max_time],
-            'currentTime': 0,
-            'namedFloats': []
-        }
-        return state
-
-    def sync_cesium_time(self, timestamp):
-        if not self.cesium_ready or self.cesium_start_timestamp is None:
-            return
-        try:
-            ts = pd.to_datetime(timestamp)
-        except Exception:
-            return
-        delta_ms = int((ts - self.cesium_start_timestamp).total_seconds() * 1000)
-        if delta_ms < 0:
-            delta_ms = 0
-        js_code = f"if (window.__setExternalCesiumTime__) {{ window.__setExternalCesiumTime__({delta_ms}); }}"
-        self.cesiumWidget.page().runJavaScript(js_code)
 
 
     def setup_timeline(self):
@@ -822,9 +695,6 @@ class TelemetryApp(QMainWindow):
             #print(f"DEBUG do YAW: {yaw}")
 
             self.update_aircraft_position(lat, lon, yaw, win, wsi)
-
-        self.sync_cesium_time(timestamp)
-
 
     def update_plot_cursors_on_release(self):
         """Chamado quando o slider é SOLTO. Atualiza os cursores dos gráficos."""
