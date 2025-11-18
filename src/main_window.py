@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QSlider, QLabel, QDialog, QProgressBar, QTextEdit,
     QCheckBox, QStackedWidget
 )
-from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QIODevice, QBuffer, QTimer
+from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QIODevice, QBuffer
 from PyQt6.QtGui import QMovie
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 import pandas as pd
@@ -120,9 +120,6 @@ class TelemetryApp(QMainWindow):
         self._register_static_assets()
 
         self.setup_ui()
-
-        if self.default_logs_dir and self.default_logs_dir.exists():
-            QTimer.singleShot(0, self._auto_load_default_logs)
 
     def _register_static_assets(self):
         self.aircraft_icon_filename = self.copy_assets_to_server(AIRCRAFT_ICON_PATH)
@@ -276,10 +273,6 @@ class TelemetryApp(QMainWindow):
             return
 
         self._start_loading_from_path(root_path)
-
-    def _auto_load_default_logs(self):
-        if self.default_logs_dir and self.default_logs_dir.exists():
-            self._start_loading_from_path(str(self.default_logs_dir))
 
     def _start_loading_from_path(self, root_path):
         if not root_path:
@@ -498,11 +491,12 @@ class TelemetryApp(QMainWindow):
         folium.Marker(location=coords[-1], popup="Fim", icon=folium.Icon(color="red")).add_to(m)
 
         # --- Ícone do aviaum  ---
-        port = self.map_server.get_port()
+        temp_dir = Path(self.map_server.get_temp_dir())
         icon_filename = self.aircraft_icon_filename
         icon_url = None
         if icon_filename:
-            icon_url = f"http://127.0.0.1:{port}/{icon_filename}"
+            icon_path = temp_dir / icon_filename
+            icon_url = QUrl.fromLocalFile(str(icon_path)).toString()
         
         icon_size = (60, 60)       # Tamanho desejado do ícone em pixels
         icon_aircraft_anchor = (30, 30)     # Ponto do ícone que corresponde à coordenada (centro)
@@ -560,7 +554,8 @@ class TelemetryApp(QMainWindow):
         icon_wind_filename = self.wind_icon_filename
         icon_wind_url = None
         if icon_wind_filename:
-            icon_wind_url = f"http://127.0.0.1:{port}/{icon_wind_filename}"
+            icon_wind_path = temp_dir / icon_wind_filename
+            icon_wind_url = QUrl.fromLocalFile(str(icon_wind_path)).toString()
         icon_wind_size = (120, 120); icon_wind_anchor = (60, 60) # Centralizado
         # Posiciona a seta um pouco acima e à direita do avião via margens negativas
         # Ajuste 'margin-left' e 'margin-top' para mudar a posição relativa
@@ -640,14 +635,12 @@ class TelemetryApp(QMainWindow):
         """
         m.get_root().html.add_child(folium.Element(js_update_function))
 
-        temp_dir = self.map_server.get_temp_dir()
-        self.temp_map_file_path = os.path.join(temp_dir, f"map_{time.time()}.html")
+        temp_dir_str = self.map_server.get_temp_dir()
+        self.temp_map_file_path = os.path.join(temp_dir_str, f"map_{time.time()}.html")
         m.save(self.temp_map_file_path)
-        map_filename = os.path.basename(self.temp_map_file_path)
-        # port = self.map_server.get_port() # Já pegamos antes
-        url_map_html = f"http://127.0.0.1:{port}/{map_filename}"
+        map_url = QUrl.fromLocalFile(self.temp_map_file_path)
         self.map_is_ready = False
-        self.mapWidget.load(QUrl(url_map_html))
+        self.mapWidget.load(map_url)
 
     def cleanup_cesium_html(self):
         if self.cesium_current_html and os.path.exists(self.cesium_current_html):
