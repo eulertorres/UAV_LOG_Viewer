@@ -27,14 +27,18 @@ class StandardPlotsWidget(QWidget):
         # Grupo de Radio Buttons
         self.plot_selector_group = QGroupBox("Gráficos")
         plot_selector_layout = QHBoxLayout()
-        self.radio_voltage = QRadioButton("Tensão")
+        self.radio_position = QRadioButton("Posicionamento")
         self.radio_wind_variability = QRadioButton("Variabilidade Vento (Vel/Dir)")
         self.radio_rpy = QRadioButton("Roll / Pitch / Yaw")
         self.radio_variance = QRadioButton("Variância RPY/Alt")
-        self.radio_position = QRadioButton("Posicionamento")
-        
-        self.radios = [self.radio_voltage, self.radio_wind_variability, self.radio_rpy, self.radio_variance, self.radio_position]
-        self.radio_voltage.setChecked(True)
+
+        self.radios = [
+            self.radio_position,
+            self.radio_wind_variability,
+            self.radio_rpy,
+            self.radio_variance,
+        ]
+        self.radio_position.setChecked(True)
         
         for r in self.radios:
             r.toggled.connect(self.update_plot) # Conecta ao método local
@@ -55,7 +59,13 @@ class StandardPlotsWidget(QWidget):
         """Recebe o DataFrame da janela principal."""
         self.df = df
         self.current_log_name = log_name
+        self.show_position_plot()
         self.update_plot() # Atualiza o gráfico com os novos dados
+
+    def show_position_plot(self):
+        """Força o gráfico padrão a exibir o plot de posicionamento."""
+        if not self.radio_position.isChecked():
+            self.radio_position.setChecked(True)
 
     def update_cursor(self, timestamp):
         """Atualiza a linha vertical (cursor) no gráfico."""
@@ -475,11 +485,10 @@ class StandardPlotsWidget(QWidget):
             self.canvas.draw()
             return
             
-        if self.radio_voltage.isChecked(): self.plot_voltage()
+        if self.radio_position.isChecked(): self.plot_position()
         elif self.radio_wind_variability.isChecked(): self.plot_wind_variability()
         elif self.radio_rpy.isChecked(): self.plot_rpy()
         elif self.radio_variance.isChecked(): self.plot_variance_rpy_alt()
-        elif self.radio_position.isChecked(): self.plot_position()
         else: # Se nenhum estiver checado (caso raro), limpa
              self.figure.clear()
              self.canvas.draw()

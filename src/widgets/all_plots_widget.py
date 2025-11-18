@@ -1,5 +1,5 @@
 # all_plots_widget.py — Tema branco + legendas completas + sync X com debounce
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea, QCheckBox, QGridLayout
 from PyQt6.QtCore import Qt, QTimer
 import pandas as pd
 import numpy as np
@@ -46,6 +46,8 @@ class AllPlotsWidget(QWidget):
         self.axes_list = []     # ViewBoxes para sync do eixo X
         self.vlines = []        # InfiniteLines (cursor) por gráfico
         self._syncing = False
+        self._plot_widgets = []
+        self.current_log_name = ""
 
         # Timer de debounce para sincronizar X
         self._sync_timer = QTimer(self)
@@ -59,15 +61,18 @@ class AllPlotsWidget(QWidget):
 
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("background-color: white; border: none;")
         main_layout.addWidget(scroll_area)
 
         scroll_content = QWidget()
+        scroll_content.setStyleSheet("background-color: white;")
         self.plots_layout = QVBoxLayout(scroll_content)
         scroll_area.setWidget(scroll_content)
 
     # ========== API pública ==========
-    def load_dataframe(self, df: pd.DataFrame):
+    def load_dataframe(self, df: pd.DataFrame, log_name: str = ""):
         self.df = df
+        self.current_log_name = log_name or ""
         self._update_plots()
 
     def update_cursor(self, timestamp):
@@ -80,15 +85,13 @@ class AllPlotsWidget(QWidget):
 
     def get_plot_images(self):
         images = []
-        for i in range(self.plots_layout.count()):
-            widget = self.plots_layout.itemAt(i).widget()
-            if isinstance(widget, pg.PlotWidget):
-                exporter = ImageExporter(widget.plotItem)
-                data = exporter.export(toBytes=True)  # bytes PNG
-                buf = io.BytesIO()
-                buf.write(data)
-                buf.seek(0)
-                images.append(buf)
+        for plotw in self._plot_widgets:
+            exporter = ImageExporter(plotw.plotItem)
+            data = exporter.export(toBytes=True)
+            buf = io.BytesIO()
+            buf.write(data)
+            buf.seek(0)
+            images.append(buf)
         return images
 
     # ========== Internos ==========
@@ -127,12 +130,14 @@ class AllPlotsWidget(QWidget):
             right_axis.setPen(pg.mkPen(150, 150, 150, 120))
 
     def _clear_plots(self):
-        for i in reversed(range(self.plots_layout.count())):
-            w = self.plots_layout.itemAt(i).widget()
-            if w:
-                w.deleteLater()
+        while self.plots_layout.count():
+            item = self.plots_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
         self.axes_list.clear()
         self.vlines.clear()
+        self._plot_widgets.clear()
 
     def _update_plots(self):
         self._clear_plots()
@@ -167,29 +172,35 @@ class AllPlotsWidget(QWidget):
         ]
 
         plotted_cols = set()
+        graphs_added = False
 
         for config in plotting_config:
             config_cols = []
-            if 'primary_y' in config:  config_cols.extend(config['primary_y']['cols'])
-            if 'secondary_y' in config: config_cols.extend(config['secondary_y']['cols'])
+            if 'primary_y' in config:
+                config_cols.extend(config['primary_y']['cols'])
+            if 'secondary_y' in config:
+                config_cols.extend(config['secondary_y']['cols'])
 
-            has_data = any((c in df_plot.columns) and (not df_plot[c].dropna().empty) for c in config_cols)
-            if has_data:
-                self._create_plot_from_config(config, df_plot)
-                plotted_cols.update(config_cols)
-            else:
-                self._create_placeholder_plot(config['title'])
+            plotted = self._create_plot_from_config(config, df_plot)
+            if plotted:
+                plotted_cols.update(plotted)
+                graphs_added = True
 
         remaining_cols = [c for c in df_plot.select_dtypes(include=np.number).columns
                           if c not in plotted_cols and c not in ('_ts_',) and 'Timestamp' not in c]
-        for col_name in remaining_cols:
-            if not df_plot[col_name].isnull().all():
-                self._create_plot_from_config({'title': col_name,
-                                               'primary_y': {'cols': [col_name], 'label': col_name}}, df_plot)
 
-        self.plots_layout.addStretch(1)
-        self._sync_x_axes()
-        self._add_vlines(df_plot)
+        grouped_configs = self._build_remaining_configs(remaining_cols, df_plot)
+        for config in grouped_configs:
+            plotted = self._create_plot_from_config(config, df_plot)
+            if plotted:
+                graphs_added = True
+
+        if graphs_added:
+            self.plots_layout.addStretch(1)
+            self._sync_x_axes()
+            self._add_vlines(df_plot)
+        else:
+            self._create_info_label("Nenhum dado numérico disponível para plotar.")
 
     def _create_info_label(self, text):
         label = QLabel(text)
@@ -200,7 +211,7 @@ class AllPlotsWidget(QWidget):
     def _create_placeholder_plot(self, title):
         plotw = pg.PlotWidget(axisItems={'bottom': DateAxisItem(orientation='bottom')})
         plotw.setMinimumHeight(150)
-        plotw.setTitle(title)
+        plotw.setTitle(self._format_plot_title(title))
         txt = pg.TextItem(f"Dados para '{title}' não disponíveis.", anchor=(0.5, 0.5), color=(120, 120, 120))
         plotw.addItem(txt)
         vb = plotw.getPlotItem().getViewBox()
@@ -208,58 +219,139 @@ class AllPlotsWidget(QWidget):
         txt.setPos(0.5, 0.5)
         self.plots_layout.addWidget(plotw)
 
+    def _build_remaining_configs(self, columns, df_plot):
+        grouped = {}
+        friendly_titles = {}
+
+        for col in columns:
+            key, friendly = self._normalize_axis_group(col)
+            grouped.setdefault(key, []).append(col)
+            friendly_titles.setdefault(key, friendly)
+
+        configs = []
+        for key, cols in grouped.items():
+            valid_cols = [c for c in cols if c in df_plot.columns and not df_plot[c].isnull().all()]
+            if not valid_cols:
+                continue
+
+            if len(valid_cols) == 1:
+                title = valid_cols[0]
+            else:
+                title = friendly_titles.get(key, key)
+
+            configs.append({
+                'title': title,
+                'primary_y': {
+                    'cols': valid_cols,
+                    'label': title
+                }
+            })
+
+        return configs
+
+    @staticmethod
+    def _normalize_axis_group(column_name: str):
+        tokens = ['_x_', '_y_', '_z_', '_X_', '_Y_', '_Z_']
+        suffixes = ['_x', '_y', '_z', '_X', '_Y', '_Z']
+        normalized = column_name
+        replaced = False
+
+        for token in tokens:
+            if token in column_name:
+                normalized = column_name.replace(token, '_axis_')
+                replaced = True
+                break
+
+        if not replaced:
+            for suffix in suffixes:
+                if column_name.endswith(suffix):
+                    normalized = column_name[: -len(suffix)] + '_axis'
+                    replaced = True
+                    break
+
+        if replaced:
+            friendly = normalized.replace('_axis_', '_XYZ_').replace('_axis', '_XYZ')
+        else:
+            friendly = column_name
+
+        return normalized, friendly
+
     def _create_plot_from_config(self, config, df_plot):
-        plotw = pg.PlotWidget(axisItems={'bottom': DateAxisItem(orientation='bottom')})
-        plotw.setMinimumHeight(360)
-        plot_item = plotw.getPlotItem()
-        plotw.setTitle(config['title'])
-        plot_item.showGrid(x=True, y=True, alpha=0.3)  # grade discreta no tema branco
-        plot_item.enableAutoRange(x=True, y=True)
+        primary_series = []
+        secondary_series = []
+        plotted_cols = set()
 
-        has_secondary = 'secondary_y' in config
-        right_label = config.get('secondary_y', {}).get('label') if has_secondary else None
-        self._ensure_right_border(plot_item, has_secondary=has_secondary, right_label=right_label, width_px=64)
-
-        colors = cycle([
-            ( 33, 150, 243),  # azul
-            (244,  67,  54),  # vermelho
-            ( 76, 175,  80),  # verde
-            (255, 193,   7),  # âmbar
-            (156,  39, 176),  # roxo
-            (  0, 188, 212),  # ciano
-            (255,  87,  34),  # laranja
-            ( 96, 125, 139),  # cinza-azulado
-            (139, 195,  74),  # verde claro
-            (121,  85,  72),  # marrom
-        ])
-
-        legend_items = []  # guardamos para garantir inclusão na legenda
-
-        # ---- Eixo primário
         if 'primary_y' in config:
             pconf = config['primary_y']
             step_mode_flag = True if pconf.get('style', '') == 'steps-post' else False
             for col in pconf['cols']:
                 if col in df_plot.columns and not df_plot[col].isnull().all():
                     valid = df_plot[['_ts_', col]].dropna()
-                    pen = pg.mkPen(color=next(colors), width=1.8)
-                    item = self._plot_series(
-                        plot_item,                              # alvo primário
-                        valid['_ts_'].to_numpy(),
-                        valid[col].to_numpy(),
-                        name=col,
-                        pen=pen,
-                        step_mode_flag=step_mode_flag
-                    )
-                    legend_items.append((item, col))
+                    if not valid.empty:
+                        primary_series.append((col, valid, step_mode_flag))
+                        plotted_cols.add(col)
+
+        if 'secondary_y' in config:
+            sconf = config['secondary_y']
+            step_mode_sec_flag = True if sconf.get('style', '') == 'steps-post' else False
+            for col in sconf['cols']:
+                if col in df_plot.columns and not df_plot[col].isnull().all():
+                    valid = df_plot[['_ts_', col]].dropna()
+                    if not valid.empty:
+                        secondary_series.append((col, valid, step_mode_sec_flag))
+                        plotted_cols.add(col)
+
+        if not primary_series and not secondary_series:
+            return set()
+
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 10)
+
+        plotw = pg.PlotWidget(axisItems={'bottom': DateAxisItem(orientation='bottom')})
+        plotw.setMinimumHeight(360)
+        plot_item = plotw.getPlotItem()
+        plotw.setTitle(self._format_plot_title(config['title']))
+        plot_item.showGrid(x=True, y=True, alpha=0.3)
+        plot_item.enableAutoRange(x=True, y=True)
+
+        has_secondary = bool(secondary_series)
+        right_label = config.get('secondary_y', {}).get('label') if has_secondary else None
+        self._ensure_right_border(plot_item, has_secondary=has_secondary, right_label=right_label, width_px=64)
+
+        colors = cycle([
+            ( 33, 150, 243),
+            (244,  67,  54),
+            ( 76, 175,  80),
+            (255, 193,   7),
+            (156,  39, 176),
+            (  0, 188, 212),
+            (255,  87,  34),
+            ( 96, 125, 139),
+            (139, 195,  74),
+            (121,  85,  72),
+        ])
+
+        legend_items = []
+
+        if primary_series:
+            pconf = config['primary_y']
+            for col, valid, step_flag in primary_series:
+                pen = pg.mkPen(color=next(colors), width=1.8)
+                item = self._plot_series(
+                    plot_item,
+                    valid['_ts_'].to_numpy(),
+                    valid[col].to_numpy(),
+                    name=col,
+                    pen=pen,
+                    step_mode_flag=step_flag
+                )
+                legend_items.append((item, col))
             if pconf.get('label'):
                 plot_item.getAxis('left').setLabel(pconf['label'])
 
-        # ---- Eixo secundário (direito) com ViewBox
         right_vb = None
-        if 'secondary_y' in config:
-            sconf = config['secondary_y']
-
+        if secondary_series:
             right_vb = pg.ViewBox()
             plot_item.showAxis('right')
             plot_item.scene().addItem(right_vb)
@@ -269,39 +361,47 @@ class AllPlotsWidget(QWidget):
             def update_right_vb():
                 right_vb.setGeometry(plot_item.vb.sceneBoundingRect())
                 right_vb.linkedViewChanged(plot_item.vb, right_vb.XAxis)
+
             plot_item.vb.sigResized.connect(update_right_vb)
             update_right_vb()
 
-            step_mode_sec_flag = True if sconf.get('style', '') == 'steps-post' else False
-            for col in sconf['cols']:
-                if col in df_plot.columns and not df_plot[col].isnull().all():
-                    valid = df_plot[['_ts_', col]].dropna()
-                    pen = pg.mkPen(color=next(colors), width=1.8)
-                    c = self._plot_series(
-                        right_vb,                               # alvo secundário
-                        valid['_ts_'].to_numpy(),
-                        valid[col].to_numpy(),
-                        name=col,
-                        pen=pen,
-                        step_mode_flag=step_mode_sec_flag
-                    )
-                    legend_items.append((c, col))
+            for col, valid, step_flag in secondary_series:
+                pen = pg.mkPen(color=next(colors), width=1.8)
+                c = self._plot_series(
+                    right_vb,
+                    valid['_ts_'].to_numpy(),
+                    valid[col].to_numpy(),
+                    name=col,
+                    pen=pen,
+                    step_mode_flag=step_flag
+                )
+                legend_items.append((c, col))
 
+            sconf = config['secondary_y']
             if sconf.get('label'):
                 plot_item.getAxis('right').setLabel(sconf['label'])
 
-        # ---- Legenda (garantimos inclusão dos itens, inclusive do eixo direito)
         self._ensure_legend(plot_item, legend_items)
 
-        # Guarda para sincronismo de X
         self.axes_list.append(plot_item.vb)
         if right_vb:
             self.axes_list.append(right_vb)
 
-        # Zoom só em X (mais leve)
         plot_item.getViewBox().setMouseEnabled(x=True, y=False)
 
-        self.plots_layout.addWidget(plotw)
+        container_layout.addWidget(plotw)
+        self._add_toggle_controls(container_layout, legend_items)
+        self.plots_layout.addWidget(container)
+        self._plot_widgets.append(plotw)
+
+        return plotted_cols
+
+    def _format_plot_title(self, base_title: str) -> str:
+        parts = [base_title]
+        if self.current_log_name:
+            parts.append(self.current_log_name)
+        full_title = " - ".join(parts)
+        return f"<span style='font-size:13px; font-weight:600;'>{full_title}</span>"
 
     # ---------- Legenda ----------
     def _ensure_legend(self, plot_item: pg.PlotItem, items):
@@ -319,6 +419,37 @@ class AllPlotsWidget(QWidget):
                 plot_item.legend.addItem(it, name)
             except Exception:
                 pass  # se já estiver, ignora
+
+    def _add_toggle_controls(self, container_layout, legend_items):
+        """Cria checkboxes para mostrar/ocultar séries individualmente."""
+        if not legend_items:
+            return
+
+        toggles_widget = QWidget()
+        grid = QGridLayout(toggles_widget)
+        grid.setContentsMargins(8, 0, 8, 8)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(4)
+
+        added = 0
+        for item, name in legend_items:
+            if item is None or name is None:
+                continue
+            checkbox = QCheckBox(name)
+            checkbox.setChecked(True)
+
+            def _toggle(state, target=item):
+                target.setVisible(Qt.CheckState(state) == Qt.CheckState.Checked)
+
+            checkbox.stateChanged.connect(_toggle)
+            grid.addWidget(checkbox, added // 3, added % 3)
+            added += 1
+
+        if added == 0:
+            toggles_widget.deleteLater()
+            return
+
+        container_layout.addWidget(toggles_widget)
 
     # ---------- Sincronismo X com debounce ----------
     def _sync_x_axes(self):
@@ -353,14 +484,12 @@ class AllPlotsWidget(QWidget):
         if df_plot.empty:
             return
         initial_ts = float(df_plot['_ts_'].iloc[0])
-        for i in range(self.plots_layout.count()):
-            widget = self.plots_layout.itemAt(i).widget()
-            if isinstance(widget, pg.PlotWidget):
-                line = pg.InfiniteLine(pos=initial_ts, angle=90, movable=False,
-                                       pen=pg.mkPen((255, 0, 0), width=1))
-                line.hide()
-                widget.addItem(line)
-                self.vlines.append(line)
+        for plotw in self._plot_widgets:
+            line = pg.InfiniteLine(pos=initial_ts, angle=90, movable=False,
+                                   pen=pg.mkPen((255, 0, 0), width=1))
+            line.hide()
+            plotw.addItem(line)
+            self.vlines.append(line)
 
     # ---------- Utilidades ----------
     @staticmethod
