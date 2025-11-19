@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QIODevice, QBuffer
 from PyQt6.QtGui import QMovie
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import QWebEngineSettings
 import pandas as pd
 import numpy as np
 import folium
@@ -209,8 +210,10 @@ class TelemetryApp(QMainWindow):
         map_panel_layout = QVBoxLayout(map_panel_widget)
         map_panel_layout.setContentsMargins(0, 0, 0, 0) # Sem margens internas
         self.mapWidget = QWebEngineView()
+        self._configure_webview(self.mapWidget)
         self.mapWidget.loadFinished.connect(self.on_map_load_finished)
         self.cesiumWidget = QWebEngineView()
+        self._configure_webview(self.cesiumWidget)
         self.cesiumWidget.loadFinished.connect(self.on_cesium_load_finished)
 
         self.map_stack = QStackedWidget()
@@ -230,6 +233,19 @@ class TelemetryApp(QMainWindow):
 
         # Define os tamanhos iniciais do splitter
         self.splitter.setSizes([1000, 600])
+
+    def _configure_webview(self, webview):
+        if not webview:
+            return
+        settings = webview.settings()
+        settings.setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls,
+            True,
+        )
+        settings.setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls,
+            True,
+        )
 
     def setup_tabs(self):
         self.standard_plots_tab = StandardPlotsWidget(self) # Cria o novo widget
