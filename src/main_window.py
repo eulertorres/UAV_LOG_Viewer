@@ -588,8 +588,6 @@ class TelemetryApp(QMainWindow):
             self.copy_assets_to_server(self.cesium_plane_asset)
             port = self.map_server.get_port()
             plane_url = f"http://127.0.0.1:{port}/{os.path.basename(self.cesium_plane_asset)}"
-            cesium_token = os.environ.get('CESIUM_ION_TOKEN', '') or ''
-            token_literal = json.dumps(cesium_token)
             plane_literal = json.dumps(plane_url)
             html_template = Template("""<!DOCTYPE html>
 <html lang='pt-BR'>
@@ -634,22 +632,17 @@ class TelemetryApp(QMainWindow):
     <script src='https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/Cesium.js'></script>
     <script>
         (function () {
-            const CESIUM_ION_TOKEN = $TOKEN_LITERAL;
-            if (CESIUM_ION_TOKEN) {
-                Cesium.Ion.defaultAccessToken = CESIUM_ION_TOKEN;
-            }
-            const hasToken = !!CESIUM_ION_TOKEN;
-            const imageryProvider = hasToken ? undefined : new Cesium.UrlTemplateImageryProvider({
+            const imageryProvider = new Cesium.UrlTemplateImageryProvider({
                 url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 credit: '© OpenStreetMap contributors',
                 tilingScheme: new Cesium.WebMercatorTilingScheme()
             });
-            const terrainProvider = hasToken ? Cesium.Terrain.fromWorldTerrain() : new Cesium.EllipsoidTerrainProvider();
+            const terrainProvider = new Cesium.EllipsoidTerrainProvider();
             const viewer = new Cesium.Viewer('cesiumContainer', {
                 animation: false,
                 timeline: false,
                 shouldAnimate: false,
-                terrain: terrainProvider,
+                terrainProvider: terrainProvider,
                 imageryProvider: imageryProvider,
                 baseLayerPicker: false,
                 sceneModePicker: false,
@@ -708,7 +701,7 @@ class TelemetryApp(QMainWindow):
 </body>
 </html>
 """)
-            html_content = html_template.substitute(TOKEN_LITERAL=token_literal, PLANE_LITERAL=plane_literal)
+            html_content = html_template.substitute(PLANE_LITERAL=plane_literal)
             output_name = f"cesium_view_{int(time.time()*1000)}.html"
             output_path = os.path.join(self.map_server.get_temp_dir(), output_name)
             with open(output_path, 'w', encoding='utf-8') as f:
