@@ -1,0 +1,1 @@
+pyinstaller run.py --name XmobotsLogViewer --noconfirm --windowed --onefile --hidden-import PyQt6.QtWebEngineWidgets --add-data "aircraft.svg;." --add-data "seta.svg;." --add-data "gato.gif;." --add-binary "src/decoder.exe;src"
