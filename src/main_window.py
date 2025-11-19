@@ -77,7 +77,7 @@ class LoadingDialog(QDialog):
 class TelemetryApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.original_window_title = "SUPER VISUALIZADOR DE LOG DO EULERRRR!!! (～￣▽￣)～"
+        self.original_window_title = "SUPER VISUALIZADOR DE LOG DO EULER!! (～￣▽￣)～ - v0.2.3"
         self.setWindowTitle(self.original_window_title) 
         self.setGeometry(100, 100, 1600, 900)
         

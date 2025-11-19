@@ -23,5 +23,13 @@ Versão 0.2.2
 - Gráfico Padrão de Idade da solução
 + Gráfico Padrão de análise de variabilidade de vento
 
-Versão 0.3
+Versão 0.2.3
 + Leitura logs do Datalogger (log**.csv)
+* Melhoria Plots em geral
+* Ajuste para tornar o programa um executável
++ Multiplos tipos de logs podem ser vistos
+* Encontra logs na pasta raíz
+- Gráfico padrão de tensão
+* Programa agora abre em "Posicionamento" e também qnd troca de log
++ Botões para tirar dados de Todos os gráficos
++ Gráfico de comparação permite escolher eixo X
