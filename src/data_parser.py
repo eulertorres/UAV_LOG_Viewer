@@ -260,7 +260,16 @@ def parse_spi_log_via_c(file_path):
     # Agrupa pelos timestamps existentes arredondados para milissegundos
     # e pega o último valor registrado para cada grupo/milissegundo.
     df = df_filtered.set_index('Timestamp').sort_index()
-    df = df.groupby(df.index.round('ms')).last()
+    df.index = df.index.round('ms')
+
+    def _last_non_null(series):
+        non_null = series.dropna()
+        if not non_null.empty:
+            return non_null.iloc[-1]
+        return np.nan
+
+    df = df.groupby(level=0).agg(_last_non_null)
+    df = df.sort_index().ffill()
 
     if df.empty: print("AVISO: DataFrame vazio após agrupamento."); return pd.DataFrame()
     
