@@ -262,13 +262,12 @@ def parse_spi_log_via_c(file_path):
     df = df_filtered.set_index('Timestamp').sort_index()
     df.index = df.index.round('ms')
 
-    def _last_non_null(series):
-        non_null = series.dropna()
-        if not non_null.empty:
-            return non_null.iloc[-1]
-        return np.nan
-
-    df = df.groupby(level=0).agg(_last_non_null)
+    # Antes: groupby(level=0).agg(_last_non_null) percorria coluna a coluna em Python,
+    # o que travava logs longos. Agora fazemos o forward-fill dentro do grupo e
+    # mantemos apenas a última linha duplicada – essa linha já contém todos os
+    # valores válidos daquele instante.
+    df = df.groupby(level=0).ffill()
+    df = df[~df.index.duplicated(keep='last')]
     df = df.sort_index().ffill()
 
     if df.empty: print("AVISO: DataFrame vazio após agrupamento."); return pd.DataFrame()
