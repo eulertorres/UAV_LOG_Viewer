@@ -104,6 +104,36 @@ class TelemetryApp(QMainWindow):
         self.cesium_html_path = ""
         self.cesium_is_ready = False
         self.cesium_plane_asset = os.path.join('assets', 'cesium', 'plane.glb')
+        self.cesium_controls_container = None
+        self.cesium_center_button = None
+        self.cesium_imagery_combo = None
+        self.cesium_imagery_presets = [
+            {
+                "key": "osm",
+                "label": "OpenStreetMap (padrão)",
+                "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                "credit": "© OpenStreetMap contributors",
+                "tilingScheme": "webMercator",
+                "maximumLevel": 19
+            },
+            {
+                "key": "esriWorldImagery",
+                "label": "Esri World Imagery (satélite)",
+                "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+                "credit": "Esri, Maxar, GeoEye, Earthstar Geographics",
+                "tilingScheme": "webMercator",
+                "maximumLevel": 19
+            },
+            {
+                "key": "cartoDark",
+                "label": "Carto Dark Matter",
+                "url": "https://cartodb-basemaps-a.global.ssl.fastly.net/dark_all/{z}/{x}/{y}.png",
+                "credit": "© CARTO",
+                "tilingScheme": "webMercator",
+                "maximumLevel": 19
+            }
+        ]
+        self.current_cesium_imagery_key = self.cesium_imagery_presets[0]["key"] if self.cesium_imagery_presets else "osm"
 
         self.copy_assets_to_server(icone_aviao)
         self.copy_assets_to_server(icone_seta)
@@ -198,11 +228,28 @@ class TelemetryApp(QMainWindow):
         self.cesiumWidget = QWebEngineView()
         self.cesiumWidget.loadFinished.connect(self.on_three_d_view_load_finished)
 
+        self.cesium_controls_container = QWidget()
+        cesium_controls_layout = QHBoxLayout(self.cesium_controls_container)
+        cesium_controls_layout.setContentsMargins(8, 4, 8, 4)
+        cesium_controls_layout.setSpacing(8)
+        cesium_controls_layout.addWidget(QLabel("Base do globo:"))
+        self.cesium_imagery_combo = QComboBox()
+        self.cesium_imagery_combo.currentIndexChanged.connect(self.on_cesium_imagery_changed)
+        cesium_controls_layout.addWidget(self.cesium_imagery_combo, 1)
+        self.cesium_center_button = QPushButton("Centralizar no drone")
+        self.cesium_center_button.clicked.connect(self.center_cesium_camera)
+        self.cesium_center_button.setEnabled(False)
+        cesium_controls_layout.addWidget(self.cesium_center_button)
+        cesium_controls_layout.addStretch(1)
+        self.cesium_controls_container.hide()
+
         self.map_stack = QStackedWidget()
         self.map_stack.addWidget(self.mapWidget)
         self.map_stack.addWidget(self.cesiumWidget)
-        map_panel_layout.addWidget(self.map_stack)
+        map_panel_layout.addWidget(self.cesium_controls_container)
+        map_panel_layout.addWidget(self.map_stack, 1)
         self.map_stack.setCurrentWidget(self.mapWidget)
+        self.populate_cesium_imagery_combo()
 
         # Adiciona o painel do mapa ao splitter
         self.splitter.addWidget(map_panel_widget)
@@ -379,6 +426,7 @@ class TelemetryApp(QMainWindow):
         self.view_toggle_checkbox.setChecked(False)
         self.view_toggle_checkbox.blockSignals(False)
         self.cleanup_cesium_html()
+        self._update_cesium_controls_state()
 
     # --- Funções do Mapa e Timeline ---
     
@@ -415,6 +463,7 @@ class TelemetryApp(QMainWindow):
             self.map_stack.setCurrentWidget(self.cesiumWidget)
         else:
             self.map_stack.setCurrentWidget(self.mapWidget)
+        self._update_cesium_controls_state()
 
     def plot_map_route(self):
         if 'Latitude' not in self.df.columns or 'Longitude' not in self.df.columns:
@@ -583,12 +632,70 @@ class TelemetryApp(QMainWindow):
         self.cesium_html_path = ""
         self.cesium_is_ready = False
 
+    def populate_cesium_imagery_combo(self):
+        if self.cesium_imagery_combo is None:
+            return
+        self.cesium_imagery_combo.blockSignals(True)
+        self.cesium_imagery_combo.clear()
+        for preset in self.cesium_imagery_presets:
+            self.cesium_imagery_combo.addItem(preset["label"], preset["key"])
+        if self.cesium_imagery_presets:
+            try:
+                index = next(
+                    idx for idx, preset in enumerate(self.cesium_imagery_presets)
+                    if preset["key"] == self.current_cesium_imagery_key
+                )
+            except StopIteration:
+                index = 0
+                self.current_cesium_imagery_key = self.cesium_imagery_presets[0]["key"]
+            self.cesium_imagery_combo.setCurrentIndex(index)
+        self.cesium_imagery_combo.blockSignals(False)
+
+    def on_cesium_imagery_changed(self, index):
+        if not self.cesium_imagery_presets or index < 0 or index >= len(self.cesium_imagery_presets):
+            return
+        selected_key = self.cesium_imagery_presets[index]["key"]
+        self.current_cesium_imagery_key = selected_key
+        self.update_cesium_imagery_layer(selected_key)
+
+    def update_cesium_imagery_layer(self, preset_key):
+        if not self.cesium_is_ready or not self.cesiumWidget:
+            return
+        js_code = (
+            "if (typeof setImageryLayer === 'function') {"
+            f"setImageryLayer('{preset_key}');"
+            "}"
+        )
+        self.cesiumWidget.page().runJavaScript(js_code)
+
+    def center_cesium_camera(self):
+        if not self.cesium_is_ready or not self.cesiumWidget:
+            return
+        js_code = (
+            "if (typeof centerCameraOnAircraft === 'function') {"
+            "centerCameraOnAircraft();"
+            "}"
+        )
+        self.cesiumWidget.page().runJavaScript(js_code)
+
+    def _update_cesium_controls_state(self):
+        if not self.cesium_controls_container:
+            return
+        show_controls = self.view_toggle_checkbox and self.view_toggle_checkbox.isChecked()
+        self.cesium_controls_container.setVisible(show_controls)
+        if self.cesium_center_button:
+            self.cesium_center_button.setEnabled(show_controls and self.cesium_is_ready)
+        if self.cesium_imagery_combo:
+            self.cesium_imagery_combo.setEnabled(show_controls)
+
     def create_cesium_viewer_html(self):
         try:
             self.copy_assets_to_server(self.cesium_plane_asset)
             port = self.map_server.get_port()
             plane_url = f"http://127.0.0.1:{port}/{os.path.basename(self.cesium_plane_asset)}"
             plane_literal = json.dumps(plane_url)
+            imagery_config_literal = json.dumps(self.cesium_imagery_presets)
+            default_imagery_key = json.dumps(self.current_cesium_imagery_key)
             html_template = Template("""<!DOCTYPE html>
 <html lang='pt-BR'>
 <head>
@@ -628,22 +735,19 @@ class TelemetryApp(QMainWindow):
         <div><strong>Lat:</strong> <span id='hud-lat'>--</span></div>
         <div><strong>Lon:</strong> <span id='hud-lon'>--</span></div>
         <div><strong>Alt:</strong> <span id='hud-alt'>--</span> m</div>
+        <div><strong>Pitch:</strong> <span id='hud-pitch'>--</span>°</div>
+        <div><strong>Roll:</strong> <span id='hud-roll'>--</span>°</div>
     </div>
     <script src='https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/Cesium.js'></script>
     <script>
         (function () {
-            const imageryProvider = new Cesium.UrlTemplateImageryProvider({
-                url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                credit: '© OpenStreetMap contributors',
-                tilingScheme: new Cesium.WebMercatorTilingScheme()
-            });
             const terrainProvider = new Cesium.EllipsoidTerrainProvider();
             const viewer = new Cesium.Viewer('cesiumContainer', {
                 animation: false,
                 timeline: false,
                 shouldAnimate: false,
                 terrainProvider: terrainProvider,
-                imageryProvider: imageryProvider,
+                imageryProvider: undefined,
                 baseLayerPicker: false,
                 sceneModePicker: false,
                 navigationHelpButton: false,
@@ -655,6 +759,44 @@ class TelemetryApp(QMainWindow):
             });
             viewer.scene.globe.enableLighting = true;
             viewer.clock.shouldAnimate = false;
+            const imageryConfigsArray = $IMAGERY_CONFIG_JSON;
+            const imageryConfigs = imageryConfigsArray.reduce((acc, cfg) => {
+                acc[cfg.key] = cfg;
+                return acc;
+            }, {});
+            const defaultImageryKey = $DEFAULT_IMAGERY_KEY;
+            function buildTilingScheme(cfg) {
+                if (cfg.tilingScheme === 'geographic') {
+                    return new Cesium.GeographicTilingScheme();
+                }
+                return new Cesium.WebMercatorTilingScheme();
+            }
+            function createImageryProvider(cfg) {
+                return new Cesium.UrlTemplateImageryProvider({
+                    url: cfg.url,
+                    credit: cfg.credit || '',
+                    tilingScheme: buildTilingScheme(cfg),
+                    maximumLevel: Number.isFinite(cfg.maximumLevel) ? cfg.maximumLevel : undefined
+                });
+            }
+            function applyImageryLayer(key) {
+                const cfg = imageryConfigs[key] || imageryConfigs[defaultImageryKey];
+                if (!cfg) {
+                    return;
+                }
+                if (window.__currentBaseLayer) {
+                    viewer.imageryLayers.remove(window.__currentBaseLayer, true);
+                }
+                window.__currentBaseLayer = viewer.imageryLayers.addImageryProvider(
+                    createImageryProvider(cfg),
+                    0
+                );
+                return cfg;
+            }
+            applyImageryLayer(defaultImageryKey);
+            window.setImageryLayer = function(key) {
+                return applyImageryLayer(key);
+            };
             const scratchHPR = new Cesium.HeadingPitchRoll();
             const defaultPosition = Cesium.Cartesian3.fromDegrees(-47.9, -15.7, 1000.0);
             const aircraftEntity = viewer.entities.add({
@@ -676,24 +818,39 @@ class TelemetryApp(QMainWindow):
             const hudLat = document.getElementById('hud-lat');
             const hudLon = document.getElementById('hud-lon');
             const hudAlt = document.getElementById('hud-alt');
-            function updateHud(lat, lon, alt) {
+            const hudPitch = document.getElementById('hud-pitch');
+            const hudRoll = document.getElementById('hud-roll');
+            function updateHud(lat, lon, alt, pitchDeg, rollDeg) {
                 hudLat.textContent = Number.isFinite(lat) ? lat.toFixed(6) : '--';
                 hudLon.textContent = Number.isFinite(lon) ? lon.toFixed(6) : '--';
                 hudAlt.textContent = Number.isFinite(alt) ? alt.toFixed(1) : '--';
+                hudPitch.textContent = Number.isFinite(pitchDeg) ? pitchDeg.toFixed(1) : '--';
+                hudRoll.textContent = Number.isFinite(rollDeg) ? rollDeg.toFixed(1) : '--';
             }
-            window.updateAircraftState = function(lat, lon, alt, headingDeg) {
+            function radiansOrZero(valueDeg) {
+                return Cesium.Math.toRadians(Number.isFinite(valueDeg) ? valueDeg : 0.0);
+            }
+            window.updateAircraftState = function(lat, lon, alt, headingDeg, pitchDeg, rollDeg) {
                 if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
                     return;
                 }
                 const safeAlt = Number.isFinite(alt) ? alt : 0.0;
                 const position = Cesium.Cartesian3.fromDegrees(lon, lat, safeAlt);
                 aircraftEntity.position = position;
-                const heading = Cesium.Math.toRadians(Number.isFinite(headingDeg) ? headingDeg : 0.0);
-                scratchHPR.heading = heading;
-                scratchHPR.pitch = 0.0;
-                scratchHPR.roll = 0.0;
+                scratchHPR.heading = radiansOrZero(headingDeg);
+                scratchHPR.pitch = radiansOrZero(pitchDeg);
+                scratchHPR.roll = radiansOrZero(rollDeg);
                 aircraftEntity.orientation = Cesium.Transforms.headingPitchRollQuaternion(position, scratchHPR);
-                updateHud(lat, lon, safeAlt);
+                updateHud(lat, lon, safeAlt, pitchDeg, rollDeg);
+            };
+            window.centerCameraOnAircraft = function() {
+                if (!aircraftEntity) {
+                    return;
+                }
+                viewer.flyTo(aircraftEntity, {
+                    duration: 0.6,
+                    offset: new Cesium.HeadingPitchRange(0.0, -0.5, 150.0)
+                });
             };
             window.__cesiumViewerReady = true;
         })();
@@ -701,7 +858,11 @@ class TelemetryApp(QMainWindow):
 </body>
 </html>
 """)
-            html_content = html_template.substitute(PLANE_LITERAL=plane_literal)
+            html_content = html_template.substitute(
+                PLANE_LITERAL=plane_literal,
+                IMAGERY_CONFIG_JSON=imagery_config_literal,
+                DEFAULT_IMAGERY_KEY=default_imagery_key
+            )
             output_name = f"cesium_view_{int(time.time()*1000)}.html"
             output_path = os.path.join(self.map_server.get_temp_dir(), output_name)
             with open(output_path, 'w', encoding='utf-8') as f:
@@ -731,16 +892,20 @@ class TelemetryApp(QMainWindow):
             if result:
                 self.cesium_is_ready = True
                 self.statusBar().showMessage("Cesium sincronizado com o slider!", 3000)
+                self.update_cesium_imagery_layer(self.current_cesium_imagery_key)
+                self._update_cesium_controls_state()
                 self.update_views_from_timeline(self.timeline_slider.value())
             elif retries > 0:
                 QTimer.singleShot(200, lambda: self._wait_for_cesium_ready(retries - 1))
             else:
                 self.statusBar().showMessage("Não consegui sincronizar o Cesium.", 5000)
+                self._update_cesium_controls_state()
 
         try:
             self.cesiumWidget.page().runJavaScript("Boolean(window.__cesiumViewerReady)", _handle_ready)
         except RuntimeError:
             self.cesium_is_ready = False
+            self._update_cesium_controls_state()
 
 
     def setup_timeline(self):
@@ -765,12 +930,16 @@ class TelemetryApp(QMainWindow):
         
         if 'Latitude' in data_row and 'Longitude' in data_row:
             yaw = data_row.get('Yaw', 0)            # Pega Yaw, default 0
+            pitch = data_row.get('Pitch', 0)
+            roll = data_row.get('Roll', 0)
             lat = data_row.get('Latitude')          # Pega a lat
             lon = data_row.get('Longitude')         # Pega a long
             alt = data_row.get('AltitudeAbs', 0)    # Altitude absoluta
             win = data_row.get('WindDirection', 0)  # Pega o windD
             wsi = data_row.get('WSI', 0)            # Pega o vento
             if not pd.notna(yaw): yaw = 0 # Trata NaN
+            if not pd.notna(pitch): pitch = 0
+            if not pd.notna(roll): roll = 0
             if not pd.notna(alt): alt = 0
             if not pd.notna(win): win = 0 # Trata NaN
             if not pd.notna(wsi): wsi = 0 # Trata NaN
@@ -778,7 +947,7 @@ class TelemetryApp(QMainWindow):
             #print(f"DEBUG do YAW: {yaw}")
 
             self.update_aircraft_position(lat, lon, yaw, win, wsi)
-            self.update_cesium_aircraft(lat, lon, alt, yaw)
+            self.update_cesium_aircraft(lat, lon, alt, yaw, pitch, roll)
 
     def update_plot_cursors_on_release(self):
         """Chamado quando o slider é SOLTO. Atualiza os cursores dos gráficos."""
@@ -804,18 +973,20 @@ class TelemetryApp(QMainWindow):
             js_code = f"updateMarkers({lat}, {lon}, {yaw}, {win}, {wsi});"
             self.mapWidget.page().runJavaScript(js_code)
 
-    def update_cesium_aircraft(self, lat, lon, alt, yaw):
+    def update_cesium_aircraft(self, lat, lon, alt, yaw, pitch, roll):
         if not self.cesium_is_ready or self.cesiumWidget is None:
             return
         if not (pd.notna(lat) and pd.notna(lon)):
             return
         safe_alt = float(alt if pd.notna(alt) else 0)
         safe_yaw = float(yaw if pd.notna(yaw) else 0)
+        safe_pitch = float(pitch if pd.notna(pitch) else 0)
+        safe_roll = float(roll if pd.notna(roll) else 0)
         safe_lat = float(lat)
         safe_lon = float(lon)
         js_code = (
             "if (typeof updateAircraftState === 'function') {"
-            f"updateAircraftState({safe_lat}, {safe_lon}, {safe_alt}, {safe_yaw});"
+            f"updateAircraftState({safe_lat}, {safe_lon}, {safe_alt}, {safe_yaw}, {safe_pitch}, {safe_roll});"
             "}"
         )
         self.cesiumWidget.page().runJavaScript(js_code)
