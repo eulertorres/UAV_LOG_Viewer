@@ -315,7 +315,13 @@ class SharePointClient:
 
         copied_any = False
         print(f"[debug][_copy_logs_only] Varredura: {source}")
-        for entry in source.iterdir():
+        try:
+            entries = list(source.iterdir())
+        except OSError as exc:
+            print(f"  [debug][_copy_logs_only] Falha ao listar {source}: {exc}")
+            return copied_any
+
+        for entry in entries:
             target = destination / entry.name
             if entry.is_dir():
                 copied_child = self._copy_logs_only(entry, target, progress_callback)
@@ -332,10 +338,16 @@ class SharePointClient:
 
             target.parent.mkdir(parents=True, exist_ok=True)
             print(f"  [debug][_copy_logs_only] Copiando arquivo de log: {entry} -> {target}")
-            shutil.copy2(entry, target)
-            copied_any = True
-            if progress_callback:
-                progress_callback(entry.name)
+            try:
+                shutil.copy2(entry, target)
+                copied_any = True
+                if progress_callback:
+                    progress_callback(entry.name)
+            except OSError as exc:
+                print(
+                    "  [debug][_copy_logs_only] Falha ao copiar arquivo; continuará com o restante: "
+                    f"{entry} -> {target} ({exc})"
+                )
 
         return copied_any
 

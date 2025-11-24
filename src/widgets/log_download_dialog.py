@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QDateEdit,
     QDialog,
     QFileDialog,
+    QGroupBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -53,7 +54,7 @@ class SharePointListWorker(QObject):
 
 
 class SharePointDownloadWorker(QObject):
-    finished = pyqtSignal(list)
+    finished = pyqtSignal(list, list)
     error = pyqtSignal(str)
     progress = pyqtSignal(int, str)
 
@@ -67,16 +68,21 @@ class SharePointDownloadWorker(QObject):
         try:
             total = len(self.flights)
             downloaded_paths: List[Path] = []
+            errors: List[str] = []
             if total == 0:
-                self.finished.emit(downloaded_paths)
+                self.finished.emit(downloaded_paths, errors)
                 return
             for idx, flight in enumerate(self.flights, start=1):
                 percent = int((idx - 1) / total * 100)
                 self.progress.emit(percent, f"Copiando {flight.name} ({idx}/{total})")
-                local_path = self.client.download_flight(flight, self.destination)
-                downloaded_paths.append(local_path)
+                try:
+                    local_path = self.client.download_flight(flight, self.destination)
+                    downloaded_paths.append(local_path)
+                except Exception as exc:  # pragma: no cover - depende do SO
+                    errors.append(f"{flight.name}: {exc}")
+                    continue
             self.progress.emit(100, "Cópia concluída")
-            self.finished.emit(downloaded_paths)
+            self.finished.emit(downloaded_paths, errors)
         except Exception as exc:  # pragma: no cover - depende da API
             self.error.emit(str(exc))
 
@@ -113,8 +119,8 @@ class LogDownloadDialog(QDialog):
         layout = QVBoxLayout(self)
         header = QLabel(
             "<h2>Copiar logs sincronizados</h2>"
-            "<p>Escolha um programa, filtre os voos desejados e copie tudo da sua pasta local"
-            " '[00] PROGRAMAS' para a pasta de Logs do aplicativo.</p>"
+            "<p>Escolha o programa, selecione um serial e copie apenas os logs (.mat/.log/.csv) "
+            "da pasta '[00] PROGRAMAS' para os Logs do aplicativo.</p>"
         )
         header.setWordWrap(True)
         layout.addWidget(header)
@@ -144,23 +150,26 @@ class LogDownloadDialog(QDialog):
     def _build_program_page(self) -> QWidget:
         widget = QWidget()
         page_layout = QVBoxLayout(widget)
-        origin_layout = QHBoxLayout()
-        origin_layout.addWidget(QLabel("Origem dos arquivos:"))
+
+        origin_box = QGroupBox("Origem dos arquivos")
+        origin_layout = QHBoxLayout(origin_box)
+        origin_layout.addWidget(QLabel("Pasta '[00] PROGRAMAS':"))
         self.origin_path_label = QLabel()
         self.origin_path_label.setWordWrap(True)
         origin_layout.addWidget(self.origin_path_label, 1)
-        self.btn_change_origin = QPushButton("Alterar pasta...")
+        self.btn_change_origin = QPushButton("Alterar...")
         self.btn_change_origin.clicked.connect(self._change_origin_folder)
         origin_layout.addWidget(self.btn_change_origin)
-        page_layout.addLayout(origin_layout)
+        page_layout.addWidget(origin_box)
+
         page_layout.addWidget(QLabel("Escolha o programa da aeronave:"))
 
         self.program_list = QListWidget()
         self.program_list.setViewMode(QListWidget.ViewMode.IconMode)
         self.program_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.program_list.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self.program_list.setGridSize(QSize(210, 210))
-        self.program_list.setIconSize(QSize(140, 140))
+        self.program_list.setGridSize(QSize(230, 220))
+        self.program_list.setIconSize(QSize(150, 150))
         self.program_list.itemSelectionChanged.connect(self._on_program_selected)
 
         for program in self.programs:
@@ -188,24 +197,26 @@ class LogDownloadDialog(QDialog):
         self.program_title.setStyleSheet("font-size: 18px; font-weight: bold;")
         page_layout.addWidget(self.program_title)
 
-        page_layout.addWidget(QLabel("Escolha o serial/agenda para ver os voos:"))
-
+        serial_box = QGroupBox("Seriais / agendas")
+        serial_layout = QVBoxLayout(serial_box)
+        serial_layout.addWidget(QLabel("Selecione o serial/agenda para ver os voos"))
         self.serial_list = QListWidget()
         self.serial_list.setViewMode(QListWidget.ViewMode.IconMode)
         self.serial_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.serial_list.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self.serial_list.setGridSize(QSize(190, 190))
-        self.serial_list.setIconSize(QSize(120, 120))
+        self.serial_list.setGridSize(QSize(200, 190))
+        self.serial_list.setIconSize(QSize(130, 130))
         self.serial_list.itemSelectionChanged.connect(self._on_serial_selected)
-        page_layout.addWidget(self.serial_list)
-
+        serial_layout.addWidget(self.serial_list)
         self.serial_status_label = QLabel("Nenhum serial disponível")
-        page_layout.addWidget(self.serial_status_label)
+        serial_layout.addWidget(self.serial_status_label)
+        page_layout.addWidget(serial_box)
 
-        filter_layout = QGridLayout()
+        filter_box = QGroupBox("Filtros e seleção")
+        filter_layout = QGridLayout(filter_box)
         filter_layout.addWidget(QLabel("Pesquisar"), 0, 0)
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Nome do voo, NS ou qualquer parte do texto...")
+        self.search_edit.setPlaceholderText("Nome do voo ou texto livre...")
         self.search_edit.textChanged.connect(self._apply_filters)
         filter_layout.addWidget(self.search_edit, 0, 1, 1, 3)
 
@@ -221,26 +232,23 @@ class LogDownloadDialog(QDialog):
         self.end_date_edit.dateChanged.connect(self._apply_filters)
         filter_layout.addWidget(self.end_date_edit, 1, 3)
 
-        page_layout.addLayout(filter_layout)
-
         action_layout = QHBoxLayout()
         self.btn_select_all = QPushButton("Selecionar tudo")
         self.btn_select_all.clicked.connect(self._select_all)
-        action_layout.addWidget(self.btn_select_all)
-
         self.btn_clear_selection = QPushButton("Limpar seleção")
         self.btn_clear_selection.clicked.connect(self._clear_selection)
+        action_layout.addWidget(self.btn_select_all)
         action_layout.addWidget(self.btn_clear_selection)
-
         action_layout.addStretch(1)
-
-        page_layout.addLayout(action_layout)
+        filter_layout.addLayout(action_layout, 2, 0, 1, 4)
 
         self.flight_list = QListWidget()
         self.flight_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.flight_list.setAlternatingRowColors(True)
         self.flight_list.itemSelectionChanged.connect(self._update_selection_label)
-        page_layout.addWidget(self.flight_list, 1)
+        filter_layout.addWidget(self.flight_list, 3, 0, 1, 4)
+
+        page_layout.addWidget(filter_box, 1)
 
         self.selection_label = QLabel("Nenhum voo selecionado")
         page_layout.addWidget(self.selection_label)
@@ -579,18 +587,19 @@ class LogDownloadDialog(QDialog):
         self.progress_bar.setValue(percent)
         self.status_label.setText(message)
 
-    def _on_download_finished(self, local_paths: List[Path]):
+    def _on_download_finished(self, local_paths: List[Path], errors: List[str]):
         self._set_busy_state(False)
         self.progress_bar.hide()
+        suffix = " com alertas" if errors else ""
         self.status_label.setText(
-            f"Cópia finalizada. {len(local_paths)} voos foram salvos na pasta de logs."
+            f"Cópia finalizada{suffix}. {len(local_paths)} voos foram salvos na pasta de logs."
         )
         destination = self._current_destination or get_appdata_logs_dir(create=True)
-        QMessageBox.information(
-            self,
-            "Cópia concluída",
-            f"{len(local_paths)} voos foram salvos em {destination}",
-        )
+        message_lines = [f"{len(local_paths)} voos foram salvos em {destination}"]
+        if errors:
+            message_lines.append("\nAlguns itens não puderam ser copiados:")
+            message_lines.extend(f"- {err}" for err in errors)
+        QMessageBox.information(self, "Cópia concluída", "\n".join(message_lines))
         self.logs_downloaded.emit(destination, local_paths)
         self._current_destination = None
 
