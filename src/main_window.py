@@ -428,6 +428,8 @@ class TelemetryApp(QMainWindow):
         self.btn_open.setEnabled(True) # Reabilita botão
         
         if not loaded_logs:
+            self.loading_widget.stop_animation()
+            self.loading_widget.close()
             QMessageBox.information(self, "NUM TEM Log", "Você que fez errado, lê direito vei, É a pasta que tem as pastas de .log")
             self.statusBar().showMessage("NAO TEM LOGGGGG AAAAAA", 5000)
             self.btn_open.setEnabled(True)
