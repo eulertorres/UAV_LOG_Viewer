@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QProgressBar,
     QStackedWidget,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -94,6 +95,8 @@ class LogDownloadDialog(QDialog):
         self.programs = list(available_programs())
         self.selected_program: SharePointProgram | None = None
         self.all_flights: List[SharePointFlight] = []
+        self._flights_by_serial: dict[str | None, List[SharePointFlight]] = {}
+        self.selected_serial: str | None = None
 
         self._list_thread: QThread | None = None
         self._download_thread: QThread | None = None
@@ -184,6 +187,20 @@ class LogDownloadDialog(QDialog):
         self.program_title = QLabel("Programa selecionado")
         self.program_title.setStyleSheet("font-size: 18px; font-weight: bold;")
         page_layout.addWidget(self.program_title)
+
+        page_layout.addWidget(QLabel("Escolha o serial/agenda para ver os voos:"))
+
+        self.serial_list = QListWidget()
+        self.serial_list.setViewMode(QListWidget.ViewMode.IconMode)
+        self.serial_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.serial_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.serial_list.setGridSize(QSize(190, 190))
+        self.serial_list.setIconSize(QSize(120, 120))
+        self.serial_list.itemSelectionChanged.connect(self._on_serial_selected)
+        page_layout.addWidget(self.serial_list)
+
+        self.serial_status_label = QLabel("Nenhum serial disponível")
+        page_layout.addWidget(self.serial_status_label)
 
         filter_layout = QGridLayout()
         filter_layout.addWidget(QLabel("Pesquisar"), 0, 0)
@@ -373,6 +390,7 @@ class LogDownloadDialog(QDialog):
             self.status_label.setText(f"{len(flights)} voos encontrados. Selecione um intervalo ou use a busca.")
         self.progress_bar.hide()
         self._set_busy_state(False)
+        self._populate_serials(flights)
         self._configure_date_filters(flights)
         self._apply_filters()
 
@@ -392,6 +410,41 @@ class LogDownloadDialog(QDialog):
         self.start_date_edit.setDate(QDate(min_date.year, min_date.month, min_date.day))
         self.end_date_edit.setDate(QDate(max_date.year, max_date.month, max_date.day))
 
+    def _populate_serials(self, flights: List[SharePointFlight]):
+        self.serial_list.clear()
+        self._flights_by_serial.clear()
+        self.selected_serial = None
+        for flight in flights:
+            key = flight.serial_folder or "(Sem serial)"
+            self._flights_by_serial.setdefault(key, []).append(flight)
+
+        if not self._flights_by_serial:
+            self.serial_status_label.setText("Nenhum serial detectado.")
+            return
+
+        folder_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        for serial, serial_flights in sorted(self._flights_by_serial.items()):
+            item = QListWidgetItem(serial)
+            item.setData(Qt.ItemDataRole.UserRole, serial)
+            item.setIcon(folder_icon)
+            log_types = set()
+            for f in serial_flights:
+                log_types.update(f.log_types)
+            tooltip_lines = [
+                f"Serial/agenda: {serial}",
+                f"Voos: {len(serial_flights)}",
+                f"Tipos de log detectados: {', '.join(sorted(log_types)) if log_types else 'nenhum'}",
+            ]
+            item.setToolTip("\n".join(tooltip_lines))
+            self.serial_list.addItem(item)
+
+        self.serial_status_label.setText(
+            f"Selecione um serial para visualizar os {len(flights)} voos encontrados."
+        )
+        # Seleciona o primeiro serial por padrão para agilizar a navegação.
+        if self.serial_list.count() > 0:
+            self.serial_list.setCurrentRow(0)
+
     def _set_busy_state(self, busy: bool):
         self._is_busy = busy
         self.btn_close.setEnabled(not busy)
@@ -399,6 +452,8 @@ class LogDownloadDialog(QDialog):
         self.btn_program_continue.setEnabled(not busy and bool(self.program_list.selectedItems()))
         if self.btn_change_origin:
             self.btn_change_origin.setEnabled(not busy)
+        if hasattr(self, "serial_list"):
+            self.serial_list.setEnabled(not busy)
         if not busy:
             self.progress_bar.setRange(0, 100)
 
@@ -419,7 +474,15 @@ class LogDownloadDialog(QDialog):
             start_date, end_date = end_date, start_date
         self.flight_list.clear()
 
-        for flight in self.all_flights:
+        if not self.selected_serial:
+            self.status_label.setText("Selecione um serial para visualizar os voos.")
+            self.selection_label.setText("Nenhum voo selecionado.")
+            self.btn_download.setEnabled(False)
+            return
+
+        serial_flights = self._flights_by_serial.get(self.selected_serial, [])
+
+        for flight in serial_flights:
             if flight.date:
                 flight_qdate = QDate(flight.date.year, flight.date.month, flight.date.day)
                 if flight_qdate < start_date or flight_qdate > end_date:
@@ -442,6 +505,17 @@ class LogDownloadDialog(QDialog):
 
         self.status_label.setText(f"Mostrando {self.flight_list.count()} voos dentro do filtro.")
         self._update_selection_label()
+
+    def _on_serial_selected(self):
+        items = self.serial_list.selectedItems()
+        if not items:
+            self.selected_serial = None
+            self.flight_list.clear()
+            self._update_selection_label()
+            self.status_label.setText("Selecione um serial para visualizar os voos.")
+            return
+        self.selected_serial = items[0].data(Qt.ItemDataRole.UserRole)
+        self._apply_filters()
 
     def _select_all(self):
         self.flight_list.selectAll()

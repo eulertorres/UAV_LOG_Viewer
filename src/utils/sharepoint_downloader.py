@@ -299,26 +299,45 @@ class SharePointClient:
             raise FileNotFoundError(f"Voo não encontrado em {source_dir}")
         target_dir = destination_root / flight.local_subpath()
         print(f"[debug][download_flight] Destino: {target_dir}")
-        self._copy_folder(source_dir, target_dir, progress_callback)
+        self._copy_logs_only(source_dir, target_dir, progress_callback)
         return target_dir
 
-    def _copy_folder(
+    def _copy_logs_only(
         self,
         source: Path,
         destination: Path,
         progress_callback: Callable[[str], None] | None,
-    ) -> None:
-        destination.mkdir(parents=True, exist_ok=True)
-        print(f"[debug][_copy_folder] Copiando de {source} para {destination}")
+    ) -> bool:
+        """Copia apenas arquivos suportados preservando subpastas.
+
+        Retorna True se ao menos um arquivo elegível foi copiado.
+        """
+
+        copied_any = False
+        print(f"[debug][_copy_logs_only] Varredura: {source}")
         for entry in source.iterdir():
             target = destination / entry.name
             if entry.is_dir():
-                self._copy_folder(entry, target, progress_callback)
-            elif entry.is_file():
-                print(f"  [debug][_copy_folder] Arquivo: {entry}")
-                shutil.copy2(entry, target)
-                if progress_callback:
-                    progress_callback(entry.name)
+                copied_child = self._copy_logs_only(entry, target, progress_callback)
+                copied_any = copied_any or copied_child
+                continue
+
+            if not entry.is_file():
+                continue
+
+            suffix = entry.suffix.lower()
+            if suffix not in SUPPORTED_LOG_EXTS:
+                print(f"  [debug][_copy_logs_only] Ignorando arquivo não suportado: {entry}")
+                continue
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            print(f"  [debug][_copy_logs_only] Copiando arquivo de log: {entry} -> {target}")
+            shutil.copy2(entry, target)
+            copied_any = True
+            if progress_callback:
+                progress_callback(entry.name)
+
+        return copied_any
 
 
 def available_programs() -> Sequence[SharePointProgram]:
