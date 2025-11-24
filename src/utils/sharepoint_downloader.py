@@ -208,9 +208,15 @@ class SharePointClient:
 
         print(f"[debug][_walk_program] Varredura em: {folder_path}")
         for entry in entries:
-            kind = "dir" if entry.is_dir() else "file"
+            try:
+                is_dir = entry.is_dir()
+            except OSError as exc:
+                print(f"  [debug][_walk_program] Falha ao inspecionar {entry}: {exc}; continuando")
+                continue
+
+            kind = "dir" if is_dir else "file"
             print(f"  [debug][_walk_program] Encontrado {kind}: {entry.name}")
-            if not entry.is_dir():
+            if not is_dir:
                 continue
             name = entry.name
             added_as_flight = False
@@ -223,25 +229,25 @@ class SharePointClient:
                         "  [debug][_walk_program] Pasta parece voo, mas a data é inválida; pulando: "
                         f"{name} ({exc})"
                     )
-                    continue
-                print(f"  [debug][_walk_program] Pasta de voo detectada por padrão: {name}")
-                has_logs, log_types = self._folder_log_types(entry)
-                flights.append(
-                    SharePointFlight(
-                        program=program,
-                        name=name,
-                        relative_path=entry.relative_to(root),
-                        serial_folder=serial_hint,
-                        date=date,
-                        log_types=tuple(sorted(log_types)) if has_logs else tuple(),
+                else:
+                    print(f"  [debug][_walk_program] Pasta de voo detectada por padrão: {name}")
+                    has_logs, log_types = self._folder_log_types(entry)
+                    flights.append(
+                        SharePointFlight(
+                            program=program,
+                            name=name,
+                            relative_path=entry.relative_to(root),
+                            serial_folder=serial_hint,
+                            date=date,
+                            log_types=tuple(sorted(log_types)) if has_logs else tuple(),
+                        )
                     )
-                )
-                added_as_flight = True
-                if not has_logs:
-                    print(
-                        "  [debug][_walk_program] Pasta encaixa no padrão de voo, mas nenhum log foi "
-                        "identificado; mantendo na lista com tipos vazios."
-                    )
+                    added_as_flight = True
+                    if not has_logs:
+                        print(
+                            "  [debug][_walk_program] Pasta encaixa no padrão de voo, mas nenhum log foi "
+                            "identificado; mantendo na lista com tipos vazios."
+                        )
                 # Ainda assim continuamos descendo, pois pode haver subpastas com logs adicionais.
 
             has_logs, log_types = self._folder_log_types(entry)
@@ -251,22 +257,34 @@ class SharePointClient:
                     "  [debug][_walk_program] Pasta tratada como voo por conter logs: "
                     f"{name} (data inferida: {inferred_date})"
                 )
-                flights.append(
-                    SharePointFlight(
-                        program=program,
-                        name=name,
-                        relative_path=entry.relative_to(root),
-                        serial_folder=serial_hint,
-                        date=inferred_date,
-                        log_types=tuple(sorted(log_types)),
+                try:
+                    flights.append(
+                        SharePointFlight(
+                            program=program,
+                            name=name,
+                            relative_path=entry.relative_to(root),
+                            serial_folder=serial_hint,
+                            date=inferred_date,
+                            log_types=tuple(sorted(log_types)),
+                        )
                     )
-                )
+                except OSError as exc:
+                    print(
+                        "  [debug][_walk_program] Falha ao registrar voo; continuará o restante: "
+                        f"{entry} ({exc})"
+                    )
                 # Não interrompe a busca; subpastas podem conter outros voos ou logs.
 
             next_serial = serial_hint
             if folder_path == ensaios_root or name.upper().startswith("NS"):
                 next_serial = name
-            self._walk_program(program, root, entry, next_serial, flights, ensaios_root)
+            try:
+                self._walk_program(program, root, entry, next_serial, flights, ensaios_root)
+            except Exception as exc:
+                print(
+                    "  [debug][_walk_program] Erro ao descer para subpasta; seguiremos para a próxima: "
+                    f"{entry} ({exc})"
+                )
 
     def _folder_log_types(self, folder: Path) -> tuple[bool, set[str]]:
         try:

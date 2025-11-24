@@ -161,8 +161,9 @@ class LogDownloadDialog(QDialog):
         self.program_list.setViewMode(QListWidget.ViewMode.IconMode)
         self.program_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.program_list.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self.program_list.setGridSize(QSize(230, 220))
-        self.program_list.setIconSize(QSize(150, 150))
+        self.program_list.setGridSize(QSize(180, 180))
+        self.program_list.setIconSize(QSize(140, 140))
+        self.program_list.setSpacing(10)
         self.program_list.itemSelectionChanged.connect(self._on_program_selected)
 
         for program in self.programs:
