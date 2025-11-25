@@ -109,6 +109,9 @@ class TelemetryApp(QMainWindow):
         self.cesium_center_button = None
         self.cesium_follow_checkbox = None
         self.cesium_imagery_combo = None
+        self.cesium_sync_timer = QTimer(self)
+        self.cesium_sync_timer.setInterval(120)
+        self.cesium_sync_timer.timeout.connect(self._sync_cesium_timeline_into_app)
         self.cesium_imagery_presets = [
             {
                 "key": "osm",
@@ -641,6 +644,7 @@ class TelemetryApp(QMainWindow):
                 pass
         self.cesium_html_path = ""
         self.cesium_is_ready = False
+        self.cesium_sync_timer.stop()
 
     def populate_cesium_imagery_combo(self):
         if self.cesium_imagery_combo is None:
@@ -744,29 +748,11 @@ class TelemetryApp(QMainWindow):
         #hud strong {
             color: #4dabf7;
         }
-        #timeline-bar {
-            position: absolute;
-            bottom: 12px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 60%;
-            background: rgba(0, 0, 0, 0.55);
-            border-radius: 10px;
-            padding: 10px 12px;
-            color: #f8f9fa;
-            font-family: 'Segoe UI', Arial, sans-serif;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+        #cesiumContainer .cesium-viewer-timelineContainer {
+            bottom: 0;
         }
-        #timeline-slider {
-            flex: 1;
-        }
-        #timeline-label {
-            min-width: 110px;
-            text-align: right;
-            font-variant-numeric: tabular-nums;
+        #cesiumContainer .cesium-viewer-animationContainer {
+            display: none !important;
         }
     </style>
 </head>
@@ -779,17 +765,13 @@ class TelemetryApp(QMainWindow):
         <div><strong>Pitch:</strong> <span id='hud-pitch'>--</span>°</div>
         <div><strong>Roll:</strong> <span id='hud-roll'>--</span>°</div>
     </div>
-    <div id='timeline-bar'>
-        <input id='timeline-slider' type='range' min='0' max='0' value='0' step='1'>
-        <div id='timeline-label'>-- / --</div>
-    </div>
     <script src='https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/Cesium.js'></script>
     <script>
         (function () {
             const terrainProvider = new Cesium.EllipsoidTerrainProvider();
             const viewer = new Cesium.Viewer('cesiumContainer', {
                 animation: false,
-                timeline: false,
+                timeline: true,
                 shouldAnimate: false,
                 terrainProvider: terrainProvider,
                 imageryProvider: undefined,
@@ -811,11 +793,16 @@ class TelemetryApp(QMainWindow):
             }, {});
             const defaultImageryKey = $DEFAULT_IMAGERY_KEY;
             const samples = $SAMPLES_JSON;
+            const sampleTimes = Array.isArray(samples)
+                ? samples.map(s => (s && Number.isFinite(s.timeMs)) ? s.timeMs : null)
+                : [];
             const routePositions = Array.isArray(samples)
                 ? samples.map(s => (s && Number.isFinite(s.lat) && Number.isFinite(s.lon))
                     ? { lat: s.lat, lon: s.lon, alt: Number.isFinite(s.alt) ? s.alt : 0.0 }
                     : null)
                 : [];
+            let startJulian = undefined;
+            let stopJulian = undefined;
             function buildTilingScheme(cfg) {
                 if (cfg.tilingScheme === 'geographic') {
                     return new Cesium.GeographicTilingScheme();
@@ -871,8 +858,6 @@ class TelemetryApp(QMainWindow):
             const hudAlt = document.getElementById('hud-alt');
             const hudPitch = document.getElementById('hud-pitch');
             const hudRoll = document.getElementById('hud-roll');
-            const timelineSlider = document.getElementById('timeline-slider');
-            const timelineLabel = document.getElementById('timeline-label');
             function updateHud(lat, lon, alt, pitchDeg, rollDeg) {
                 hudLat.textContent = Number.isFinite(lat) ? lat.toFixed(6) : '--';
                 hudLon.textContent = Number.isFinite(lon) ? lon.toFixed(6) : '--';
@@ -948,16 +933,30 @@ class TelemetryApp(QMainWindow):
                 completedPath.polyline.positions = toCartesian(done);
                 upcomingPath.polyline.positions = toCartesian(nextSegment);
             }
-            function formatProgressLabel(idx, total) {
-                const displayIndex = total ? idx + 1 : 0;
-                return `${displayIndex.toString().padStart(4, '0')} / ${total.toString().padStart(4, '0')}`;
+            function julianFromMs(ms) {
+                return Cesium.JulianDate.fromDate(new Date(ms));
+            }
+            function findIndexForJulian(jd) {
+                if (!sampleTimes.length) return 0;
+                const currentMs = Cesium.JulianDate.toDate(jd).getTime();
+                for (let i = 0; i < sampleTimes.length; i++) {
+                    const t = sampleTimes[i];
+                    if (t === null) continue;
+                    const next = sampleTimes[Math.min(sampleTimes.length - 1, i + 1)];
+                    if (currentMs <= (next ?? currentMs)) {
+                        return i;
+                    }
+                }
+                return sampleTimes.length - 1;
+            }
+            function clampIndex(idx) {
+                return Math.max(0, Math.min(samples.length - 1, Number(idx) || 0));
             }
             let currentIndex = 0;
-            window.setTimelineIndex = function(index) {
-                if (!Array.isArray(samples) || !samples.length) {
-                    return;
-                }
-                const clamped = Math.max(0, Math.min(samples.length - 1, Number(index) || 0));
+            function applyIndex(idx) {
+                if (!Array.isArray(samples) || !samples.length) return;
+                const clamped = clampIndex(idx);
+                if (clamped === currentIndex && !viewer.clock.shouldAnimate) return;
                 currentIndex = clamped;
                 const sample = samples[clamped];
                 if (sample) {
@@ -967,19 +966,31 @@ class TelemetryApp(QMainWindow):
                     }
                 }
                 updateRouteProgress(clamped);
-                if (timelineSlider) {
-                    timelineSlider.value = clamped;
-                    timelineLabel.textContent = formatProgressLabel(clamped, samples.length);
+                window.__currentTimelineIndex = clamped;
+            }
+            window.setTimelineIndex = function(index) {
+                if (!sampleTimes.length) return;
+                const clamped = clampIndex(index);
+                const t = sampleTimes[clamped];
+                if (Number.isFinite(t)) {
+                    viewer.clock.shouldAnimate = false;
+                    viewer.clock.currentTime = julianFromMs(t);
+                    applyIndex(clamped);
                 }
             };
             if (Array.isArray(samples) && samples.length) {
-                timelineSlider.max = Math.max(0, samples.length - 1);
-                timelineSlider.value = 0;
-                timelineLabel.textContent = formatProgressLabel(0, samples.length);
-                timelineSlider.addEventListener('input', (ev) => {
-                    const idx = Number(ev.target.value) || 0;
-                    window.setTimelineIndex(idx);
-                });
+                const firstValidTime = sampleTimes.find(t => t !== null);
+                const lastValidTime = [...sampleTimes].reverse().find(t => t !== null);
+                if (Number.isFinite(firstValidTime) && Number.isFinite(lastValidTime)) {
+                    startJulian = julianFromMs(firstValidTime);
+                    stopJulian = julianFromMs(lastValidTime);
+                    viewer.clock.startTime = startJulian.clone();
+                    viewer.clock.stopTime = stopJulian.clone();
+                    viewer.clock.currentTime = startJulian.clone();
+                    viewer.clock.clockRange = Cesium.ClockRange.CLAMPED;
+                    viewer.clock.shouldAnimate = false;
+                    viewer.timeline.zoomTo(startJulian, stopJulian);
+                }
                 const initialSample = samples.find(s => !!s);
                 if (initialSample) {
                     const startPosition = Cesium.Cartesian3.fromDegrees(initialSample.lon, initialSample.lat, initialSample.alt || 0.0);
@@ -991,7 +1002,13 @@ class TelemetryApp(QMainWindow):
                 }
                 viewer.trackedEntity = aircraftEntity;
                 window.__followEnabled = true;
-                window.setTimelineIndex(0);
+                viewer.clock.onTick.addEventListener(function(clock) {
+                    if (!sampleTimes.length) return;
+                    const idx = findIndexForJulian(clock.currentTime);
+                    if (idx !== currentIndex || clock.shouldAnimate) {
+                        applyIndex(idx);
+                    }
+                });
             } else {
                 viewer.trackedEntity = aircraftEntity;
                 window.__followEnabled = true;
@@ -1040,10 +1057,12 @@ class TelemetryApp(QMainWindow):
                 self.update_cesium_imagery_layer(self.current_cesium_imagery_key)
                 self._update_cesium_controls_state()
                 self.update_views_from_timeline(self.timeline_slider.value())
+                self.update_cesium_index(self.timeline_slider.value())
                 if self.cesium_follow_checkbox:
                     self.cesium_follow_checkbox.blockSignals(True)
                     self.cesium_follow_checkbox.setChecked(True)
                     self.cesium_follow_checkbox.blockSignals(False)
+                self.cesium_sync_timer.start()
             elif retries > 0:
                 QTimer.singleShot(200, lambda: self._wait_for_cesium_ready(retries - 1))
             else:
@@ -1134,6 +1153,27 @@ class TelemetryApp(QMainWindow):
         )
         self.cesiumWidget.page().runJavaScript(js_code)
 
+    def _sync_cesium_timeline_into_app(self):
+        if not self.cesium_is_ready or self.cesiumWidget is None or self.df.empty:
+            return
+        js_code = "typeof window.__currentTimelineIndex === 'number' ? window.__currentTimelineIndex : null"
+        self.cesiumWidget.page().runJavaScript(js_code, self._apply_cesium_index)
+
+    def _apply_cesium_index(self, value):
+        try:
+            idx = int(value)
+        except Exception:
+            return
+        if idx < 0:
+            idx = 0
+        if idx >= len(self.df):
+            idx = len(self.df) - 1
+        if idx != self.timeline_slider.value():
+            self.timeline_slider.blockSignals(True)
+            self.timeline_slider.setValue(idx)
+            self.timeline_slider.blockSignals(False)
+            self.update_views_from_timeline(idx)
+
     def on_cesium_follow_changed(self, state):
         enabled = Qt.CheckState(state) == Qt.CheckState.Checked
         if not self.cesium_is_ready or self.cesiumWidget is None:
@@ -1155,9 +1195,13 @@ class TelemetryApp(QMainWindow):
     def _extract_heading_deg(self, row):
         yaw_candidates = [
             ('Yaw', False),
+            ('Yaw_deg', False),
+            ('yaw', False),
+            ('Heading', False),
             ('AHRS_yaw', True),
             ('EKF_yaw', True),
-            ('DCM_yaw', True)
+            ('DCM_yaw', True),
+            ('heading', False)
         ]
         for col, is_radians in yaw_candidates:
             if col in row and pd.notna(row[col]):
@@ -1185,13 +1229,21 @@ class TelemetryApp(QMainWindow):
             if pd.notna(lat) and pd.notna(lon):
                 alt_abs = row.get('AltitudeAbs') if 'AltitudeAbs' in row else None
                 alt_rel = self._compute_relative_altitude(alt_abs)
+                timestamp = row.get('Timestamp') if 'Timestamp' in row else None
+                time_ms = None
+                if pd.notna(timestamp):
+                    try:
+                        time_ms = int(pd.to_datetime(timestamp).value // 1_000_000)
+                    except Exception:
+                        time_ms = None
                 samples.append({
                     'lat': float(lat),
                     'lon': float(lon),
                     'alt': float(alt_rel),
                     'heading': float(self._extract_heading_deg(row)),
                     'pitch': float(row.get('Pitch', 0) if pd.notna(row.get('Pitch', 0)) else 0),
-                    'roll': float(row.get('Roll', 0) if pd.notna(row.get('Roll', 0)) else 0)
+                    'roll': float(row.get('Roll', 0) if pd.notna(row.get('Roll', 0)) else 0),
+                    'timeMs': time_ms
                 })
             else:
                 samples.append(None)
