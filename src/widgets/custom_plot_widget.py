@@ -77,6 +77,19 @@ class CustomPlotWidget(QWidget):
     def update_cursor(self, timestamp):
         pass
 
+    def set_time_window(self, start_ts, end_ts):
+        if not self.axes:
+            return
+        try:
+            for ax in self.axes:
+                try:
+                    ax.set_xlim(start_ts, end_ts)
+                except Exception:
+                    pass
+            self.canvas.draw_idle()
+        except Exception:
+            return
+
     def update_plot(self):
         self.figure.clear()
         self.axes.clear()

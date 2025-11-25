@@ -82,6 +82,20 @@ class StandardPlotsWidget(QWidget):
         if self.vlines:
             self.canvas.draw_idle()
 
+    def set_time_window(self, start_ts, end_ts):
+        if self.df.empty or not self.figure.get_axes():
+            return
+        self._syncing = True
+        try:
+            for ax in self.figure.get_axes():
+                try:
+                    ax.set_xlim(start_ts, end_ts)
+                except Exception:
+                    pass
+        finally:
+            self._syncing = False
+        self.canvas.draw_idle()
+
 
     # --- Funções de Plot (Movidas para cá e CORRIGIDAS com .to_numpy()) ---
     

@@ -78,6 +78,26 @@ class AllPlotsWidget(QWidget):
             vline.setValue(ts)
             vline.show()
 
+    def set_time_window(self, start_ts, end_ts):
+        if not self.axes_list:
+            return
+        start_val = self._to_epoch_seconds(start_ts)
+        end_val = self._to_epoch_seconds(end_ts)
+        if start_val is None or end_val is None:
+            return
+        self._sync_timer.stop()
+        self._syncing = True
+        try:
+            for vb in self.axes_list:
+                try:
+                    vb.setXRange(start_val, end_val, padding=0)
+                except Exception:
+                    pass
+        finally:
+            self._syncing = False
+        # reinicia o debounce para futuras interações do usuário
+        self._sync_timer.start()
+
     def get_plot_images(self):
         images = []
         for i in range(self.plots_layout.count()):
