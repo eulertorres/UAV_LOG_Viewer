@@ -712,8 +712,7 @@ class TelemetryApp(QMainWindow):
             plane_literal = json.dumps(plane_url)
             imagery_config_literal = json.dumps(self.cesium_imagery_presets)
             default_imagery_key = json.dumps(self.current_cesium_imagery_key)
-            route_positions = self._build_cesium_route_positions()
-            route_positions_literal = json.dumps(route_positions)
+            samples_literal = json.dumps(self._build_cesium_samples())
             html_template = Template("""<!DOCTYPE html>
 <html lang='pt-BR'>
 <head>
@@ -745,6 +744,30 @@ class TelemetryApp(QMainWindow):
         #hud strong {
             color: #4dabf7;
         }
+        #timeline-bar {
+            position: absolute;
+            bottom: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 60%;
+            background: rgba(0, 0, 0, 0.55);
+            border-radius: 10px;
+            padding: 10px 12px;
+            color: #f8f9fa;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+        }
+        #timeline-slider {
+            flex: 1;
+        }
+        #timeline-label {
+            min-width: 110px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
     </style>
 </head>
 <body>
@@ -755,6 +778,10 @@ class TelemetryApp(QMainWindow):
         <div><strong>Alt:</strong> <span id='hud-alt'>--</span> m</div>
         <div><strong>Pitch:</strong> <span id='hud-pitch'>--</span>°</div>
         <div><strong>Roll:</strong> <span id='hud-roll'>--</span>°</div>
+    </div>
+    <div id='timeline-bar'>
+        <input id='timeline-slider' type='range' min='0' max='0' value='0' step='1'>
+        <div id='timeline-label'>-- / --</div>
     </div>
     <script src='https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/Cesium.js'></script>
     <script>
@@ -783,6 +810,12 @@ class TelemetryApp(QMainWindow):
                 return acc;
             }, {});
             const defaultImageryKey = $DEFAULT_IMAGERY_KEY;
+            const samples = $SAMPLES_JSON;
+            const routePositions = Array.isArray(samples)
+                ? samples.map(s => (s && Number.isFinite(s.lat) && Number.isFinite(s.lon))
+                    ? { lat: s.lat, lon: s.lon, alt: Number.isFinite(s.alt) ? s.alt : 0.0 }
+                    : null)
+                : [];
             function buildTilingScheme(cfg) {
                 if (cfg.tilingScheme === 'geographic') {
                     return new Cesium.GeographicTilingScheme();
@@ -838,6 +871,8 @@ class TelemetryApp(QMainWindow):
             const hudAlt = document.getElementById('hud-alt');
             const hudPitch = document.getElementById('hud-pitch');
             const hudRoll = document.getElementById('hud-roll');
+            const timelineSlider = document.getElementById('timeline-slider');
+            const timelineLabel = document.getElementById('timeline-label');
             function updateHud(lat, lon, alt, pitchDeg, rollDeg) {
                 hudLat.textContent = Number.isFinite(lat) ? lat.toFixed(6) : '--';
                 hudLon.textContent = Number.isFinite(lon) ? lon.toFixed(6) : '--';
@@ -849,19 +884,19 @@ class TelemetryApp(QMainWindow):
                 return Cesium.Math.toRadians(Number.isFinite(valueDeg) ? valueDeg : 0.0);
             }
             const headingOffset = Cesium.Math.toRadians(-90.0);
-            window.updateAircraftState = function(lat, lon, alt, headingDeg, pitchDeg, rollDeg) {
-                if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+            function applySample(sample) {
+                if (!sample || !Number.isFinite(sample.lat) || !Number.isFinite(sample.lon)) {
                     return;
                 }
-                const safeAlt = Number.isFinite(alt) ? alt : 0.0;
-                const position = Cesium.Cartesian3.fromDegrees(lon, lat, safeAlt);
+                const safeAlt = Number.isFinite(sample.alt) ? sample.alt : 0.0;
+                const position = Cesium.Cartesian3.fromDegrees(sample.lon, sample.lat, safeAlt);
                 aircraftEntity.position = position;
-                scratchHPR.heading = radiansOrZero(headingDeg) + headingOffset;
-                scratchHPR.pitch = radiansOrZero(pitchDeg);
-                scratchHPR.roll = radiansOrZero(rollDeg);
+                scratchHPR.heading = radiansOrZero(sample.heading) + headingOffset;
+                scratchHPR.pitch = radiansOrZero(sample.pitch);
+                scratchHPR.roll = radiansOrZero(sample.roll);
                 aircraftEntity.orientation = Cesium.Transforms.headingPitchRollQuaternion(position, scratchHPR);
-                updateHud(lat, lon, safeAlt, pitchDeg, rollDeg);
-            };
+                updateHud(sample.lat, sample.lon, safeAlt, sample.pitch, sample.roll);
+            }
             window.centerCameraOnAircraft = function() {
                 if (!aircraftEntity) {
                     return;
@@ -878,7 +913,6 @@ class TelemetryApp(QMainWindow):
                 window.__followEnabled = !!enabled;
                 viewer.trackedEntity = enabled ? aircraftEntity : undefined;
             };
-            const routePositions = $ROUTE_POSITIONS_JSON;
             const completedPath = viewer.entities.add({
                 polyline: {
                     positions: [],
@@ -904,7 +938,7 @@ class TelemetryApp(QMainWindow):
                 }
                 return arr.length ? Cesium.Cartesian3.fromDegreesArrayHeights(arr) : [];
             }
-            window.updateRouteProgress = function(index) {
+            function updateRouteProgress(index) {
                 if (!Array.isArray(routePositions) || !routePositions.length) {
                     return;
                 }
@@ -913,18 +947,51 @@ class TelemetryApp(QMainWindow):
                 const nextSegment = routePositions.slice(Math.max(0, clamped - 1));
                 completedPath.polyline.positions = toCartesian(done);
                 upcomingPath.polyline.positions = toCartesian(nextSegment);
+            }
+            function formatProgressLabel(idx, total) {
+                const displayIndex = total ? idx + 1 : 0;
+                return `${displayIndex.toString().padStart(4, '0')} / ${total.toString().padStart(4, '0')}`;
+            }
+            let currentIndex = 0;
+            window.setTimelineIndex = function(index) {
+                if (!Array.isArray(samples) || !samples.length) {
+                    return;
+                }
+                const clamped = Math.max(0, Math.min(samples.length - 1, Number(index) || 0));
+                currentIndex = clamped;
+                const sample = samples[clamped];
+                if (sample) {
+                    applySample(sample);
+                    if (window.__followEnabled !== false) {
+                        viewer.trackedEntity = aircraftEntity;
+                    }
+                }
+                updateRouteProgress(clamped);
+                if (timelineSlider) {
+                    timelineSlider.value = clamped;
+                    timelineLabel.textContent = formatProgressLabel(clamped, samples.length);
+                }
             };
-            const initialPos = routePositions.find(p => !!p);
-            if (initialPos) {
-                const startPosition = Cesium.Cartesian3.fromDegrees(initialPos.lon, initialPos.lat, initialPos.alt);
-                aircraftEntity.position = startPosition;
-                aircraftEntity.orientation = Cesium.Transforms.headingPitchRollQuaternion(
-                    startPosition,
-                    new Cesium.HeadingPitchRoll()
-                );
+            if (Array.isArray(samples) && samples.length) {
+                timelineSlider.max = Math.max(0, samples.length - 1);
+                timelineSlider.value = 0;
+                timelineLabel.textContent = formatProgressLabel(0, samples.length);
+                timelineSlider.addEventListener('input', (ev) => {
+                    const idx = Number(ev.target.value) || 0;
+                    window.setTimelineIndex(idx);
+                });
+                const initialSample = samples.find(s => !!s);
+                if (initialSample) {
+                    const startPosition = Cesium.Cartesian3.fromDegrees(initialSample.lon, initialSample.lat, initialSample.alt || 0.0);
+                    aircraftEntity.position = startPosition;
+                    aircraftEntity.orientation = Cesium.Transforms.headingPitchRollQuaternion(
+                        startPosition,
+                        new Cesium.HeadingPitchRoll()
+                    );
+                }
                 viewer.trackedEntity = aircraftEntity;
                 window.__followEnabled = true;
-                window.updateRouteProgress(0);
+                window.setTimelineIndex(0);
             } else {
                 viewer.trackedEntity = aircraftEntity;
                 window.__followEnabled = true;
@@ -939,7 +1006,7 @@ class TelemetryApp(QMainWindow):
                 PLANE_LITERAL=plane_literal,
                 IMAGERY_CONFIG_JSON=imagery_config_literal,
                 DEFAULT_IMAGERY_KEY=default_imagery_key,
-                ROUTE_POSITIONS_JSON=route_positions_literal
+                SAMPLES_JSON=samples_literal
             )
             output_name = f"cesium_view_{int(time.time()*1000)}.html"
             output_path = os.path.join(self.map_server.get_temp_dir(), output_name)
@@ -1031,8 +1098,7 @@ class TelemetryApp(QMainWindow):
             alt_rel = self._compute_relative_altitude(alt_abs)
 
             self.update_aircraft_position(lat, lon, yaw, win, wsi)
-            self.update_cesium_aircraft(lat, lon, alt_rel, yaw, pitch, roll)
-            self.update_cesium_route_progress(index)
+            self.update_cesium_index(index)
 
     def update_plot_cursors_on_release(self):
         """Chamado quando o slider é SOLTO. Atualiza os cursores dos gráficos."""
@@ -1058,30 +1124,12 @@ class TelemetryApp(QMainWindow):
             js_code = f"updateMarkers({lat}, {lon}, {yaw}, {win}, {wsi});"
             self.mapWidget.page().runJavaScript(js_code)
 
-    def update_cesium_aircraft(self, lat, lon, alt, yaw, pitch, roll):
-        if not self.cesium_is_ready or self.cesiumWidget is None:
-            return
-        if not (pd.notna(lat) and pd.notna(lon)):
-            return
-        safe_alt = float(alt if pd.notna(alt) else 0)
-        safe_yaw = float(yaw if pd.notna(yaw) else 0)
-        safe_pitch = float(pitch if pd.notna(pitch) else 0)
-        safe_roll = float(roll if pd.notna(roll) else 0)
-        safe_lat = float(lat)
-        safe_lon = float(lon)
-        js_code = (
-            "if (typeof updateAircraftState === 'function') {"
-            f"updateAircraftState({safe_lat}, {safe_lon}, {safe_alt}, {safe_yaw}, {safe_pitch}, {safe_roll});"
-            "}"
-        )
-        self.cesiumWidget.page().runJavaScript(js_code)
-
-    def update_cesium_route_progress(self, index):
+    def update_cesium_index(self, index):
         if not self.cesium_is_ready or self.cesiumWidget is None:
             return
         js_code = (
-            "if (typeof updateRouteProgress === 'function') {"
-            f"updateRouteProgress({index});"
+            "if (typeof setTimelineIndex === 'function') {"
+            f"setTimelineIndex({int(index)});"
             "}"
         )
         self.cesiumWidget.page().runJavaScript(js_code)
@@ -1127,24 +1175,27 @@ class TelemetryApp(QMainWindow):
         first_valid = self.df['AltitudeAbs'].dropna()
         self.altitude_reference = float(first_valid.iloc[0]) if not first_valid.empty else 0.0
 
-    def _build_cesium_route_positions(self):
-        positions = []
+    def _build_cesium_samples(self):
+        samples = []
         if self.df.empty:
-            return positions
+            return samples
         for _, row in self.df.iterrows():
             lat = row.get('Latitude') if 'Latitude' in row else None
             lon = row.get('Longitude') if 'Longitude' in row else None
-            alt_abs = row.get('AltitudeAbs') if 'AltitudeAbs' in row else None
             if pd.notna(lat) and pd.notna(lon):
+                alt_abs = row.get('AltitudeAbs') if 'AltitudeAbs' in row else None
                 alt_rel = self._compute_relative_altitude(alt_abs)
-                positions.append({
+                samples.append({
                     'lat': float(lat),
                     'lon': float(lon),
-                    'alt': float(alt_rel)
+                    'alt': float(alt_rel),
+                    'heading': float(self._extract_heading_deg(row)),
+                    'pitch': float(row.get('Pitch', 0) if pd.notna(row.get('Pitch', 0)) else 0),
+                    'roll': float(row.get('Roll', 0) if pd.notna(row.get('Roll', 0)) else 0)
                 })
             else:
-                positions.append(None)
-        return positions
+                samples.append(None)
+        return samples
 
     def set_timestamp_manually(self):
         if self.df.empty: return
