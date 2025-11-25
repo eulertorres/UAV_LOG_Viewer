@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QMessageBox, QSplitter, QGroupBox,
     QRadioButton, QTabWidget, QComboBox, QInputDialog,
-    QSlider, QLabel, QDialog, QProgressBar, QTextEdit,
+    QLabel, QDialog, QProgressBar, QTextEdit,
     QCheckBox, QStackedWidget
 )
 from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QIODevice, QBuffer, QTimer
@@ -140,6 +140,7 @@ class TelemetryApp(QMainWindow):
         ]
         self.current_cesium_imagery_key = self.cesium_imagery_presets[0]["key"] if self.cesium_imagery_presets else "osm"
         self.altitude_reference = 0.0
+        self.current_timeline_index = 0
 
         self.copy_assets_to_server(icone_aviao)
         self.copy_assets_to_server(icone_seta)
@@ -285,13 +286,6 @@ class TelemetryApp(QMainWindow):
 
     def setup_timeline_controls(self, parent_layout):
         timeline_layout = QHBoxLayout() # Cria o layout horizontal para a timeline
-        self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
-        self.timeline_slider.setEnabled(False)
-        self.timeline_slider.setTracking(True)
-        self.timeline_slider.valueChanged.connect(self.update_views_from_timeline)
-        self.timeline_slider.sliderMoved.connect(self.update_views_from_timeline)
-        self.timeline_slider.sliderReleased.connect(self.update_plot_cursors_on_release)
-
         self.timestamp_label = QLabel("Timestamp: --:--:--.---"); self.timestamp_label.setFixedWidth(180)
         self.btn_set_timestamp = QPushButton("Definir 🕒")
         self.btn_set_timestamp.setToolTip("Definir timestamp manualmente"); self.btn_set_timestamp.setFixedWidth(80)
@@ -299,7 +293,7 @@ class TelemetryApp(QMainWindow):
         self.btn_set_timestamp.setEnabled(False)
 
         # Adiciona os widgets ao layout da timeline
-        timeline_layout.addWidget(self.timeline_slider) # Slider ocupa a maior parte
+        timeline_layout.addStretch(1)
         timeline_layout.addWidget(self.btn_set_timestamp)
         timeline_layout.addWidget(self.timestamp_label)
 
@@ -450,7 +444,7 @@ class TelemetryApp(QMainWindow):
             self.map_is_ready = True
             #print("DEBUG: Carregamento HTML do mapa finalizado. JS cuidará da inicialização.")
             # Atualiza a posição inicial assim que possível
-            self.update_views_from_timeline(self.timeline_slider.value())
+            self.update_views_from_timeline(self.current_timeline_index)
         else:
             self.map_is_ready = False
             print("ERRO: VISHII deu ruim o HTML do mapa, HEEELP aaaaaaaa")
@@ -1053,11 +1047,11 @@ class TelemetryApp(QMainWindow):
         def _handle_ready(result):
             if result:
                 self.cesium_is_ready = True
-                self.statusBar().showMessage("Cesium sincronizado com o slider!", 3000)
+                self.statusBar().showMessage("Cesium pronto e timeline carregada!", 3000)
                 self.update_cesium_imagery_layer(self.current_cesium_imagery_key)
                 self._update_cesium_controls_state()
-                self.update_views_from_timeline(self.timeline_slider.value())
-                self.update_cesium_index(self.timeline_slider.value())
+                self.update_views_from_timeline(self.current_timeline_index)
+                self.update_cesium_index(self.current_timeline_index)
                 if self.cesium_follow_checkbox:
                     self.cesium_follow_checkbox.blockSignals(True)
                     self.cesium_follow_checkbox.setChecked(True)
@@ -1078,19 +1072,26 @@ class TelemetryApp(QMainWindow):
 
     def setup_timeline(self):
         if not self.df.empty:
-            self.timeline_slider.setRange(0, len(self.df) - 1)
-            self.timeline_slider.setValue(0)
-            self.timeline_slider.setEnabled(True)
+            self.current_timeline_index = 0
+            if 'Timestamp' in self.df.columns and not self.df['Timestamp'].empty:
+                first_ts = self.df['Timestamp'].iloc[0]
+                if pd.notna(first_ts):
+                    self.timestamp_label.setText(f"Timestamp: {first_ts.strftime('%H:%M:%S.%f')[:-3]}")
             self.btn_set_timestamp.setEnabled(True)
             self.btn_save_pdf.setEnabled(True)
+            # Mantém a timeline do Cesium como única fonte de playback
+            if not self.cesium_html_path:
+                self.show_cesium_3d_view()
         else:
-            self.timeline_slider.setEnabled(False)
+            self.current_timeline_index = 0
             self.btn_set_timestamp.setEnabled(False)
             self.btn_save_pdf.setEnabled(False)
             self.timestamp_label.setText("Timestamp: --:--:--.---")
             
-    def update_views_from_timeline(self, index):
-        if self.df.empty or index >= len(self.df): return
+    def update_views_from_timeline(self, index, push_to_cesium=False):
+        if self.df.empty or index >= len(self.df):
+            return
+        self.current_timeline_index = index
         data_row = self.df.iloc[index]
         timestamp = data_row['Timestamp']
 
@@ -1112,23 +1113,15 @@ class TelemetryApp(QMainWindow):
             if not pd.notna(win): win = 0 # Trata NaN
             if not pd.notna(wsi): wsi = 0 # Trata NaN
 
-            #print(f"DEBUG do YAW: {yaw}")
-
             alt_rel = self._compute_relative_altitude(alt_abs)
 
             self.update_aircraft_position(lat, lon, yaw, win, wsi)
-            self.update_cesium_index(index)
+            if push_to_cesium:
+                self.update_cesium_index(index)
 
-    def update_plot_cursors_on_release(self):
-        """Chamado quando o slider é SOLTO. Atualiza os cursores dos gráficos."""
-        if self.df.empty: return
-        
-        index = self.timeline_slider.value()
-        if index >= len(self.df): return # Segurança extra
-            
-        timestamp = self.df['Timestamp'].iloc[index]
-        #print(f"DEBUG: Slider solto. Atualizando cursores dos gráficos para {timestamp}")
+        self._update_plot_cursors(timestamp)
 
+    def _update_plot_cursors(self, timestamp):
         if self.standard_plots_tab: self.standard_plots_tab.update_cursor(timestamp)
         if self.all_plots_tab: self.all_plots_tab.update_cursor(timestamp)
         if self.custom_plot_tab: self.custom_plot_tab.update_cursor(timestamp) # Ainda tem que ser implementado
@@ -1168,10 +1161,7 @@ class TelemetryApp(QMainWindow):
             idx = 0
         if idx >= len(self.df):
             idx = len(self.df) - 1
-        if idx != self.timeline_slider.value():
-            self.timeline_slider.blockSignals(True)
-            self.timeline_slider.setValue(idx)
-            self.timeline_slider.blockSignals(False)
+        if idx != self.current_timeline_index:
             self.update_views_from_timeline(idx)
 
     def on_cesium_follow_changed(self, state):
@@ -1251,7 +1241,7 @@ class TelemetryApp(QMainWindow):
 
     def set_timestamp_manually(self):
         if self.df.empty: return
-        current_ts_str = self.df['Timestamp'].iloc[self.timeline_slider.value()].strftime('%H:%M:%S.%f')[:-3]
+        current_ts_str = self.df['Timestamp'].iloc[self.current_timeline_index].strftime('%H:%M:%S.%f')[:-3]
         text, ok = QInputDialog.getText(self, "Definir Timestamp", "Digite (HH:MM:SS.mmm):", text=current_ts_str)
         if ok and text:
             try:
@@ -1259,14 +1249,9 @@ class TelemetryApp(QMainWindow):
                 time_part = pd.to_datetime(text, format='%H:%M:%S.%f').time()
                 target_timestamp = pd.Timestamp.combine(date_part, time_part)
                 closest_index = (self.df['Timestamp'] - target_timestamp).abs().idxmin()
-                
-                # Move o slider (isso vai disparar update_views_from_timeline para label e mapa)
-                self.timeline_slider.setValue(closest_index) 
-                
-                # ### ALTERADO ### Chama explicitamente a função de atualizar os gráficos
-                # Precisamos disso aqui porque setValue não dispara sliderReleased
-                self.update_plot_cursors_on_release() 
-                
+
+                self.update_views_from_timeline(int(closest_index), push_to_cesium=True)
+
             except ValueError:
                 QMessageBox.warning(self, "Erro de Formato", "Use HH:MM:SS.mmm.")
 
