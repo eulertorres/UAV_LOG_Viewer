@@ -109,6 +109,9 @@ class TelemetryApp(QMainWindow):
         self.cesium_center_button = None
         self.cesium_follow_checkbox = None
         self.cesium_imagery_combo = None
+        self.timelineWidget = None
+        self.timeline_html_path = ""
+        self.timeline_is_ready = False
         self.cesium_sync_timer = QTimer(self)
         self.cesium_sync_timer.setInterval(120)
         self.cesium_sync_timer.timeout.connect(self._sync_cesium_timeline_into_app)
@@ -141,6 +144,7 @@ class TelemetryApp(QMainWindow):
         self.current_cesium_imagery_key = self.cesium_imagery_presets[0]["key"] if self.cesium_imagery_presets else "osm"
         self.altitude_reference = 0.0
         self.current_timeline_index = 0
+        self.last_plot_cursor_update_time = 0.0
 
         self.copy_assets_to_server(icone_aviao)
         self.copy_assets_to_server(icone_seta)
@@ -285,20 +289,26 @@ class TelemetryApp(QMainWindow):
         self.tabs.addTab(self.all_plots_tab, "Todos os Gráficos (Log Ativo)")
 
     def setup_timeline_controls(self, parent_layout):
-        timeline_layout = QHBoxLayout() # Cria o layout horizontal para a timeline
+        wrapper_layout = QVBoxLayout()
+        self.timelineWidget = QWebEngineView()
+        self.timelineWidget.setMinimumHeight(150)
+        self.timelineWidget.loadFinished.connect(self.on_timeline_load_finished)
+
+        controls_layout = QHBoxLayout()
         self.timestamp_label = QLabel("Timestamp: --:--:--.---"); self.timestamp_label.setFixedWidth(180)
         self.btn_set_timestamp = QPushButton("Definir 🕒")
         self.btn_set_timestamp.setToolTip("Definir timestamp manualmente"); self.btn_set_timestamp.setFixedWidth(80)
         self.btn_set_timestamp.clicked.connect(self.set_timestamp_manually)
         self.btn_set_timestamp.setEnabled(False)
 
-        # Adiciona os widgets ao layout da timeline
-        timeline_layout.addStretch(1)
-        timeline_layout.addWidget(self.btn_set_timestamp)
-        timeline_layout.addWidget(self.timestamp_label)
+        controls_layout.addStretch(1)
+        controls_layout.addWidget(self.btn_set_timestamp)
+        controls_layout.addWidget(self.timestamp_label)
 
-        # Adiciona o layout da timeline ao layout principal (vertical) que foi passado
-        parent_layout.addLayout(timeline_layout)
+        wrapper_layout.addWidget(self.timelineWidget)
+        wrapper_layout.addLayout(controls_layout)
+        parent_layout.addLayout(wrapper_layout)
+        self.refresh_timeline_html()
 
     def open_log_directories(self):
         root_path = QFileDialog.getExistingDirectory(
@@ -639,6 +649,15 @@ class TelemetryApp(QMainWindow):
         self.cesium_html_path = ""
         self.cesium_is_ready = False
         self.cesium_sync_timer.stop()
+
+    def cleanup_timeline_html(self):
+        if self.timeline_html_path and os.path.exists(self.timeline_html_path):
+            try:
+                os.remove(self.timeline_html_path)
+            except OSError:
+                pass
+        self.timeline_html_path = ""
+        self.timeline_is_ready = False
 
     def populate_cesium_imagery_combo(self):
         if self.cesium_imagery_combo is None:
@@ -1010,9 +1029,9 @@ class TelemetryApp(QMainWindow):
             window.__cesiumViewerReady = true;
         })();
     </script>
-</body>
-</html>
-""")
+          </body>
+          </html>
+          """)
             html_content = html_template.substitute(
                 PLANE_LITERAL=plane_literal,
                 IMAGERY_CONFIG_JSON=imagery_config_literal,
@@ -1028,6 +1047,138 @@ class TelemetryApp(QMainWindow):
             QMessageBox.warning(self, "Visualização 3D", f"Não foi possível preparar o Cesium: {exc}")
             return ""
 
+    def create_cesium_timeline_html(self):
+        try:
+            samples_literal = json.dumps(self._build_cesium_samples())
+            html_template = Template("""<!DOCTYPE html>
+    <html lang='pt-BR'>
+    <head>
+        <meta charset='utf-8'>
+        <title>Timeline - Cesium</title>
+        <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/Widgets/widgets.css'>
+        <style>
+            html, body, #timelineContainer {
+                width: 100%;
+                height: 100%;
+                margin: 0;
+                padding: 0;
+                overflow: hidden;
+                background: #01030a;
+            }
+            #timelineContainer .cesium-viewer-cesiumWidgetContainer,
+            #timelineContainer .cesium-viewer-toolbar,
+            #timelineContainer .cesium-viewer-fullscreenContainer,
+            #timelineContainer .cesium-viewer-animationContainer {
+                display: none !important;
+            }
+            #timelineContainer .cesium-viewer-timelineContainer {
+                bottom: 0;
+                height: 100%;
+            }
+            #timelineContainer .cesium-viewer-bottom {
+                bottom: 0;
+            }
+        </style>
+    </head>
+    <body>
+        <div id='timelineContainer'></div>
+        <script src='https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/Cesium.js'></script>
+        <script>
+            (function () {
+                const samples = $SAMPLES_JSON;
+                const sampleTimes = Array.isArray(samples)
+                    ? samples.map(s => (s && Number.isFinite(s.timeMs)) ? s.timeMs : null)
+                    : [];
+                const viewer = new Cesium.Viewer('timelineContainer', {
+                    animation: false,
+                    timeline: true,
+                    shouldAnimate: false,
+                    imageryProvider: false,
+                    baseLayerPicker: false,
+                    geocoder: false,
+                    sceneModePicker: false,
+                    navigationHelpButton: false,
+                    fullscreenButton: false,
+                    homeButton: false,
+                    infoBox: false,
+                    selectionIndicator: false
+                });
+                viewer.scene.canvas.style.display = 'none';
+                viewer.cesiumWidget.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+                function julianFromMs(ms) { return Cesium.JulianDate.fromDate(new Date(ms)); }
+                function clampIndex(idx) { return Math.max(0, Math.min(samples.length - 1, Number(idx) || 0)); }
+                function findIndexForJulian(jd) {
+                    if (!sampleTimes.length) return 0;
+                    const currentMs = Cesium.JulianDate.toDate(jd).getTime();
+                    for (let i = 0; i < sampleTimes.length; i++) {
+                        const t = sampleTimes[i];
+                        if (t === null) continue;
+                        const next = sampleTimes[Math.min(sampleTimes.length - 1, i + 1)];
+                        if (currentMs <= (next ?? currentMs)) { return i; }
+                    }
+                    return sampleTimes.length - 1;
+                }
+                function configureClock() {
+                    if (!sampleTimes.length) {
+                        viewer.timeline.zoomTo(viewer.clock.startTime, viewer.clock.stopTime);
+                        return;
+                    }
+                    const firstValidTime = sampleTimes.find(t => t !== null);
+                    const lastValidTime = [...sampleTimes].reverse().find(t => t !== null);
+                    if (Number.isFinite(firstValidTime) && Number.isFinite(lastValidTime)) {
+                        const start = julianFromMs(firstValidTime);
+                        const stop = julianFromMs(lastValidTime);
+                        viewer.clock.startTime = start.clone();
+                        viewer.clock.stopTime = stop.clone();
+                        viewer.clock.currentTime = start.clone();
+                        viewer.clock.clockRange = Cesium.ClockRange.CLAMPED;
+                        viewer.clock.shouldAnimate = false;
+                        viewer.timeline.zoomTo(start, stop);
+                    }
+                }
+                let currentIndex = 0;
+                window.__currentTimelineIndex = 0;
+                function applyIndex(idx) {
+                    if (!Array.isArray(samples) || !samples.length) return;
+                    const clamped = clampIndex(idx);
+                    if (clamped === currentIndex && !viewer.clock.shouldAnimate) return;
+                    currentIndex = clamped;
+                    window.__currentTimelineIndex = clamped;
+                }
+                viewer.clock.onTick.addEventListener(function(clock) {
+                    if (!sampleTimes.length) return;
+                    const idx = findIndexForJulian(clock.currentTime);
+                    if (idx !== currentIndex || clock.shouldAnimate) {
+                        applyIndex(idx);
+                    }
+                });
+                window.setTimelineIndex = function(index) {
+                    if (!sampleTimes.length) return;
+                    const clamped = clampIndex(index);
+                    const t = sampleTimes[clamped];
+                    if (Number.isFinite(t)) {
+                        viewer.clock.shouldAnimate = false;
+                        viewer.clock.currentTime = julianFromMs(t);
+                        applyIndex(clamped);
+                    }
+                };
+                configureClock();
+                window.__timelineReady = true;
+            })();
+        </script>
+    </body>
+    </html>
+    """)
+            html_content = html_template.substitute(SAMPLES_JSON=samples_literal)
+            output_name = f"cesium_timeline_{int(time.time()*1000)}.html"
+            output_path = os.path.join(self.map_server.get_temp_dir(), output_name)
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            return output_path
+        except Exception as exc:
+            QMessageBox.warning(self, "Timeline", f"Não foi possível preparar a timeline: {exc}")
+            return ""
+
     def show_cesium_3d_view(self):
         self.cleanup_cesium_html()
         html_path = self.create_cesium_viewer_html()
@@ -1039,6 +1190,47 @@ class TelemetryApp(QMainWindow):
         url = QUrl(f"http://127.0.0.1:{port}/{os.path.basename(html_path)}")
         self.cesiumWidget.load(url)
         return True
+
+    def refresh_timeline_html(self):
+        if not self.timelineWidget:
+            return
+        self.cleanup_timeline_html()
+        html_path = self.create_cesium_timeline_html()
+        if not html_path:
+            return
+        self.timeline_html_path = html_path
+        port = self.map_server.get_port()
+        self.timeline_is_ready = False
+        url = QUrl(f"http://127.0.0.1:{port}/{os.path.basename(html_path)}")
+        self.timelineWidget.load(url)
+
+    def on_timeline_load_finished(self, ok):
+        if ok:
+            self._wait_for_timeline_ready()
+        else:
+            self.timeline_is_ready = False
+
+    def _wait_for_timeline_ready(self, retries=20):
+        if not self.timelineWidget:
+            return
+
+        def _handle_ready(result):
+            if result:
+                self.timeline_is_ready = True
+                self.statusBar().showMessage("Timeline pronta!", 2000)
+                self.update_views_from_timeline(self.current_timeline_index, push_to_cesium=True, sync_timeline_widget=False, force_plot_update=True)
+                if not self.cesium_sync_timer.isActive():
+                    self.cesium_sync_timer.start()
+            elif retries > 0:
+                QTimer.singleShot(200, lambda: self._wait_for_timeline_ready(retries - 1))
+            else:
+                self.timeline_is_ready = False
+                self.statusBar().showMessage("Não consegui sincronizar a timeline.", 4000)
+
+        try:
+            self.timelineWidget.page().runJavaScript("Boolean(window.__timelineReady)", _handle_ready)
+        except RuntimeError:
+            self.timeline_is_ready = False
 
     def _wait_for_cesium_ready(self, retries=20):
         if not self.cesiumWidget:
@@ -1071,6 +1263,8 @@ class TelemetryApp(QMainWindow):
 
 
     def setup_timeline(self):
+        self.last_plot_cursor_update_time = 0.0
+        self.refresh_timeline_html()
         if not self.df.empty:
             self.current_timeline_index = 0
             if 'Timestamp' in self.df.columns and not self.df['Timestamp'].empty:
@@ -1088,7 +1282,7 @@ class TelemetryApp(QMainWindow):
             self.btn_save_pdf.setEnabled(False)
             self.timestamp_label.setText("Timestamp: --:--:--.---")
             
-    def update_views_from_timeline(self, index, push_to_cesium=False):
+    def update_views_from_timeline(self, index, push_to_cesium=False, sync_timeline_widget=False, force_plot_update=False):
         if self.df.empty or index >= len(self.df):
             return
         self.current_timeline_index = index
@@ -1118,8 +1312,13 @@ class TelemetryApp(QMainWindow):
             self.update_aircraft_position(lat, lon, yaw, win, wsi)
             if push_to_cesium:
                 self.update_cesium_index(index)
+                if sync_timeline_widget:
+                    self.update_timeline_index(index)
 
-        self._update_plot_cursors(timestamp)
+        now = time.monotonic()
+        if force_plot_update or (now - self.last_plot_cursor_update_time) >= 1.0:
+            self._update_plot_cursors(timestamp)
+            self.last_plot_cursor_update_time = now
 
     def _update_plot_cursors(self, timestamp):
         if self.standard_plots_tab: self.standard_plots_tab.update_cursor(timestamp)
@@ -1146,13 +1345,35 @@ class TelemetryApp(QMainWindow):
         )
         self.cesiumWidget.page().runJavaScript(js_code)
 
-    def _sync_cesium_timeline_into_app(self):
-        if not self.cesium_is_ready or self.cesiumWidget is None or self.df.empty:
+    def update_timeline_index(self, index):
+        if not self.timeline_is_ready or self.timelineWidget is None:
             return
-        js_code = "typeof window.__currentTimelineIndex === 'number' ? window.__currentTimelineIndex : null"
-        self.cesiumWidget.page().runJavaScript(js_code, self._apply_cesium_index)
+        js_code = (
+            "if (typeof setTimelineIndex === 'function') {"
+            f"setTimelineIndex({int(index)});"
+            "}"
+        )
+        self.timelineWidget.page().runJavaScript(js_code)
 
-    def _apply_cesium_index(self, value):
+    def _sync_cesium_timeline_into_app(self):
+        if self.df.empty:
+            return
+
+        target_widget = None
+        push_to_cesium = True
+        if self.timeline_is_ready and self.timelineWidget is not None:
+            target_widget = self.timelineWidget
+        elif self.cesium_is_ready and self.cesiumWidget is not None:
+            target_widget = self.cesiumWidget
+            push_to_cesium = False
+
+        if not target_widget:
+            return
+
+        js_code = "typeof window.__currentTimelineIndex === 'number' ? window.__currentTimelineIndex : null"
+        target_widget.page().runJavaScript(js_code, lambda v: self._apply_timeline_index(v, push_to_cesium))
+
+    def _apply_timeline_index(self, value, push_to_cesium=True):
         try:
             idx = int(value)
         except Exception:
@@ -1162,7 +1383,7 @@ class TelemetryApp(QMainWindow):
         if idx >= len(self.df):
             idx = len(self.df) - 1
         if idx != self.current_timeline_index:
-            self.update_views_from_timeline(idx)
+            self.update_views_from_timeline(idx, push_to_cesium=push_to_cesium)
 
     def on_cesium_follow_changed(self, state):
         enabled = Qt.CheckState(state) == Qt.CheckState.Checked
@@ -1250,7 +1471,7 @@ class TelemetryApp(QMainWindow):
                 target_timestamp = pd.Timestamp.combine(date_part, time_part)
                 closest_index = (self.df['Timestamp'] - target_timestamp).abs().idxmin()
 
-                self.update_views_from_timeline(int(closest_index), push_to_cesium=True)
+                self.update_views_from_timeline(int(closest_index), push_to_cesium=True, sync_timeline_widget=True, force_plot_update=True)
 
             except ValueError:
                 QMessageBox.warning(self, "Erro de Formato", "Use HH:MM:SS.mmm.")

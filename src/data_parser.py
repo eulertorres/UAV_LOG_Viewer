@@ -834,7 +834,7 @@ def parse_mat_file(file_path, DEBUG_PRINT=False):
     col_map = {
         'AHRS_roll'       : ('Roll',        rad2deg),
         'AHRS_pitch'      : ('Pitch',       rad2deg),
-        'AHRS_yaw'        : ('Yaw',         None),  # N vo normalizar naum
+        'AHRS_yaw'        : ('Yaw',         yaw_normalize_deg),
 
         'Latitude_PA1'    : ('Latitude',    None),
         'Longitude_PA1'   : ('Longitude',   None),
@@ -1019,7 +1019,9 @@ def parse_log_file(file_path):
 
     df = pd.DataFrame(data)
 
-    df['Timestamp'] = pd.to_datetime(df['Timestamp_str'], format='%H:%M:%S.%f', errors='coerce')
+    base_time = _infer_base_time_from_parent(file_path)
+    time_deltas = pd.to_timedelta(df['Timestamp_str'], errors='coerce')
+    df['Timestamp'] = (base_time.normalize() + time_deltas).where(time_deltas.notna())
     df = df.dropna(subset=['Timestamp']).reset_index(drop=True)
     
     if "Yaw" in df.columns and not df["Yaw"].isnull().all():
