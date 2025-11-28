@@ -1,11 +1,13 @@
 # all_plots_widget.py — Tema branco + legendas completas + sync X com debounce
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea, QCheckBox, QGridLayout, QHBoxLayout, QDoubleSpinBox
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea, QCheckBox, QGridLayout, QHBoxLayout, QDoubleSpinBox, QPushButton, QDialog, QDialogButtonBox
 from PyQt6.QtCore import Qt, QTimer
 import pandas as pd
 import numpy as np
 import io
 from itertools import cycle
 from datetime import datetime
+from pathlib import Path
+import json
 
 import pyqtgraph as pg
 from pyqtgraph.exporters import ImageExporter
@@ -50,6 +52,13 @@ class AllPlotsWidget(QWidget):
         self.datalogger_df: pd.DataFrame | None = None
         self.current_log_name = ""
         self.datalogger_offset_sec: float = 0.0
+        self.hidden_graph_titles: set[str] = set()
+        self._available_plot_titles: set[str] = set()
+
+        # Persistência simples
+        self._config_path = Path.home() / ".xmobots_log_viewer" / "config.json"
+        self._config_path.parent.mkdir(parents=True, exist_ok=True)
+        self._load_config()
 
         # Timer de debounce para sincronizar X
         self._sync_timer = QTimer(self)
@@ -74,8 +83,10 @@ class AllPlotsWidget(QWidget):
         self.datalogger_offset_spin.setValue(self.datalogger_offset_sec)
         self.datalogger_offset_spin.valueChanged.connect(self._on_datalogger_offset_changed)
         controls_layout.addWidget(self.datalogger_offset_spin)
+        self.graph_filter_button = QPushButton("Selecionar gráficos")
+        self.graph_filter_button.clicked.connect(self._open_graph_filter_dialog)
+        controls_layout.addWidget(self.graph_filter_button)
         controls_layout.addStretch(1)
-        self.datalogger_controls.hide()
         main_layout.addWidget(self.datalogger_controls)
 
         scroll_area = QScrollArea()
@@ -179,20 +190,26 @@ class AllPlotsWidget(QWidget):
         self.axes_list.clear()
         self.vlines.clear()
         self._plot_widgets.clear()
+        self._aileron_overlay_items = []
+        self._aileron_overlay_base_df: pd.DataFrame | None = None
 
     def _update_datalogger_controls_visibility(self):
         has_overlay = self.datalogger_df is not None and not self.datalogger_df.empty
-        self.datalogger_controls.setVisible(bool(has_overlay))
-        if not has_overlay:
-            self.datalogger_offset_sec = 0.0
+        self.datalogger_controls.setVisible(True)
+        self.datalogger_offset_spin.setEnabled(has_overlay)
+        if has_overlay:
             self.datalogger_offset_spin.blockSignals(True)
             self.datalogger_offset_spin.setValue(self.datalogger_offset_sec)
             self.datalogger_offset_spin.blockSignals(False)
 
     def _on_datalogger_offset_changed(self, value: float):
         self.datalogger_offset_sec = float(value)
-        # Recalcula gráficos com o deslocamento aplicado
-        self._update_plots()
+        self._save_config()
+        if self._aileron_overlay_items:
+            self._update_aileron_overlays()
+        else:
+            # fallback seguro caso ainda não existam overlays específicos
+            self._update_plots()
 
     def _update_plots(self):
         self._clear_plots()
@@ -212,7 +229,9 @@ class AllPlotsWidget(QWidget):
         overlay_plot_df = None
         if self.datalogger_df is not None and not self.datalogger_df.empty and 'Timestamp' in self.datalogger_df.columns:
             overlay_plot_df = self.datalogger_df.copy()
-            overlay_plot_df['_ts_'] = overlay_plot_df['Timestamp'].map(self._to_epoch_seconds) + self.datalogger_offset_sec
+            overlay_plot_df['_ts_base_'] = overlay_plot_df['Timestamp'].map(self._to_epoch_seconds)
+            overlay_plot_df['_ts_'] = overlay_plot_df['_ts_base_'] + self.datalogger_offset_sec
+            self._aileron_overlay_base_df = overlay_plot_df
 
         aileron_overlays = []
         aileron_styles = {}
@@ -267,10 +286,15 @@ class AllPlotsWidget(QWidget):
              'secondary_y': {'cols': ['CHT'], 'label': 'Temperatura (°C)'}},
         ]
 
+        # Conjunto de títulos disponíveis para o diálogo (mantém também os ocultos)
+        self._available_plot_titles = {cfg['title'] for cfg in plotting_config}
+
         plotted_cols = set()
         graphs_added = False
 
         for config in plotting_config:
+            if config['title'] in self.hidden_graph_titles:
+                continue
             config_cols = []
             if 'primary_y' in config:
                 config_cols.extend(config['primary_y']['cols'])
@@ -287,6 +311,9 @@ class AllPlotsWidget(QWidget):
 
         grouped_configs = self._build_remaining_configs(remaining_cols, df_plot)
         for config in grouped_configs:
+            self._available_plot_titles.add(config['title'])
+            if config['title'] in self.hidden_graph_titles:
+                continue
             plotted = self._create_plot_from_config(config, df_plot)
             if plotted:
                 graphs_added = True
@@ -531,6 +558,9 @@ class AllPlotsWidget(QWidget):
         self.plots_layout.addWidget(container)
         self._plot_widgets.append(plotw)
 
+        if config.get('title') == 'Comandos dos Atuadores' and overlays:
+            self._register_aileron_overlays(legend_items, plot_item, right_vb)
+
         return plotted_cols
 
     def _format_plot_title(self, base_title: str) -> str:
@@ -587,6 +617,132 @@ class AllPlotsWidget(QWidget):
             return
 
         container_layout.addWidget(toggles_widget)
+
+    # ---------- Overlays dedicados (Comandos dos Atuadores) ----------
+    def _register_aileron_overlays(self, legend_items, plot_item: pg.PlotItem, right_vb: pg.ViewBox | None):
+        if self._aileron_overlay_base_df is None:
+            return
+
+        for item, name in legend_items:
+            if item is None or name is None:
+                continue
+            data = item.getData()
+            if not data or len(data) < 2:
+                continue
+            base_x = item.getData()[0]
+            if base_x is None:
+                continue
+            if len(base_x) != len(item.getData()[1]):
+                continue
+            # Se não existe coluna base, não é overlay do datalogger
+            if '_ts_base_' not in self._aileron_overlay_base_df.columns:
+                continue
+            base_series = self._aileron_overlay_base_df
+            col_candidates = []
+            for col in ('ServoL_PWM_us', 'ServoR_PWM_us'):
+                if col in base_series.columns and name.endswith(col):
+                    col_candidates.append(col)
+            if not col_candidates:
+                continue
+            col = col_candidates[0]
+            valid = base_series[[col, '_ts_base_']].dropna()
+            if valid.empty:
+                continue
+            base_ts = valid['_ts_base_'].to_numpy()
+            y_vals = valid[col].to_numpy()
+            step_flag = False
+            pen = item.opts.get('pen') if hasattr(item, 'opts') else None
+            self._aileron_overlay_items.append({
+                'item': item,
+                'name': name,
+                'pen': pen,
+                'base_ts': base_ts,
+                'y': y_vals,
+                'step': step_flag
+            })
+
+    def _update_aileron_overlays(self):
+        if not self._aileron_overlay_items:
+            return
+        for entry in self._aileron_overlay_items:
+            base_ts = entry['base_ts']
+            y_vals = entry['y']
+            if base_ts is None or y_vals is None:
+                continue
+            x_vals = base_ts + self.datalogger_offset_sec
+            if entry['step']:
+                x_vals, y_to_plot = self._as_step_post_arrays(x_vals, y_vals)
+            else:
+                y_to_plot = y_vals
+            try:
+                entry['item'].setData(
+                    x=x_vals,
+                    y=y_to_plot,
+                    pen=entry.get('pen'),
+                    connect='all',
+                    clipToView=True,
+                    autoDownsample=True,
+                    downsampleMethod='peak',
+                    antialias=False,
+                    name=entry.get('name')
+                )
+            except Exception:
+                continue
+
+    # ---------- Config local ----------
+    def _load_config(self):
+        try:
+            if self._config_path.exists():
+                with self._config_path.open('r', encoding='utf-8') as fh:
+                    data = json.load(fh)
+                self.datalogger_offset_sec = float(data.get('datalogger_offset_sec', 0.0))
+                hidden = data.get('hidden_graph_titles', [])
+                if isinstance(hidden, list):
+                    self.hidden_graph_titles = set(hidden)
+        except Exception:
+            self.datalogger_offset_sec = 0.0
+            self.hidden_graph_titles = set()
+
+    def _save_config(self):
+        payload = {
+            'datalogger_offset_sec': self.datalogger_offset_sec,
+            'hidden_graph_titles': sorted(self.hidden_graph_titles)
+        }
+        try:
+            with self._config_path.open('w', encoding='utf-8') as fh:
+                json.dump(payload, fh, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    # ---------- Diálogo de seleção de gráficos ----------
+    def _open_graph_filter_dialog(self):
+        if not self._available_plot_titles:
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Selecionar gráficos")
+        layout = QVBoxLayout(dialog)
+
+        checkboxes = []
+        for title in sorted(self._available_plot_titles):
+            cb = QCheckBox(title)
+            cb.setChecked(title not in self.hidden_graph_titles)
+            layout.addWidget(cb)
+            checkboxes.append(cb)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_hidden = set()
+            for cb in checkboxes:
+                if not cb.isChecked():
+                    new_hidden.add(cb.text())
+            self.hidden_graph_titles = new_hidden
+            self._save_config()
+            self._update_plots()
 
     # ---------- Sincronismo X com debounce ----------
     def _sync_x_axes(self):
