@@ -118,6 +118,8 @@ class TelemetryApp(QMainWindow):
         self.cesium_center_button = None
         self.cesium_follow_checkbox = None
         self.cesium_imagery_combo = None
+        self.cesium_play_button = None
+        self.cesium_speed_combo = None
         self.timelineWidget = None
         self.timeline_html_path = ""
         self.timeline_is_ready = False
@@ -154,6 +156,8 @@ class TelemetryApp(QMainWindow):
         self.altitude_reference = 0.0
         self.current_timeline_index = 0
         self.last_plot_cursor_update_time = 0.0
+        self.cesium_playing = False
+        self.first_datalogger_df: pd.DataFrame | None = None
 
         self.aircraft_icon_filename = None
         self.wind_icon_filename = None
@@ -285,6 +289,17 @@ class TelemetryApp(QMainWindow):
         self.cesium_center_button.clicked.connect(self.center_cesium_camera)
         self.cesium_center_button.setEnabled(False)
         cesium_controls_layout.addWidget(self.cesium_center_button)
+
+        self.cesium_play_button = QPushButton("Play ▶")
+        self.cesium_play_button.clicked.connect(self.toggle_cesium_playback)
+        cesium_controls_layout.addWidget(self.cesium_play_button)
+
+        self.cesium_speed_combo = QComboBox()
+        self.cesium_speed_combo.addItems(["0.5x", "1x", "2x", "4x"])
+        self.cesium_speed_combo.setCurrentText("1x")
+        self.cesium_speed_combo.currentTextChanged.connect(self.on_cesium_speed_changed)
+        cesium_controls_layout.addWidget(QLabel("Velocidade:"))
+        cesium_controls_layout.addWidget(self.cesium_speed_combo)
         cesium_controls_layout.addStretch(1)
         self.cesium_controls_container.hide()
 
@@ -507,6 +522,7 @@ class TelemetryApp(QMainWindow):
             return
 
         self.log_data = loaded_logs
+        self.first_datalogger_df = self._find_first_datalogger_df()
         self.log_selector_combo.blockSignals(True); self.log_selector_combo.addItems(sorted(self.log_data.keys())); self.log_selector_combo.blockSignals(False)
         self.log_selector_combo.setEnabled(True)
         self._on_log_selected(self.log_selector_combo.currentText()) # Seleciona o primeiro
@@ -533,6 +549,7 @@ class TelemetryApp(QMainWindow):
         self.log_data.clear()
         self.df = pd.DataFrame()
         self.current_log_name = ""
+        self.first_datalogger_df = None
         self.log_selector_combo.blockSignals(True)
         self.log_selector_combo.clear()
         self.log_selector_combo.blockSignals(False)
@@ -556,11 +573,18 @@ class TelemetryApp(QMainWindow):
         self.mapWidget.setHtml("")
         self.setup_timeline()
 
+    def _find_first_datalogger_df(self):
+        for _, df in self.log_data.items():
+            if isinstance(df, pd.DataFrame) and 'ServoL_PWM_us' in df.columns and 'Timestamp' in df.columns:
+                return df
+        return None
+
     def _on_log_selected(self, log_name):
         if not log_name or log_name not in self.log_data: return
         self.current_log_name = log_name
         self.df = self.log_data[log_name]
         self._update_altitude_reference()
+        self.cesium_playing = False
 
         self.loading_widget.start_animation()
         self.loading_widget.open()
@@ -568,7 +592,7 @@ class TelemetryApp(QMainWindow):
 
         try:
             if self.standard_plots_tab: self.standard_plots_tab.load_dataframe(self.df, self.current_log_name)
-            if self.all_plots_tab: self.all_plots_tab.load_dataframe(self.df, self.current_log_name)
+            if self.all_plots_tab: self.all_plots_tab.load_dataframe(self.df, self.current_log_name, self.first_datalogger_df)
             # O custom_plot_tab já recebe todos os logs no on_loading_finished
 
             if self.tabs and self.standard_plots_tab:
@@ -812,6 +836,7 @@ class TelemetryApp(QMainWindow):
                 pass
         self.cesium_html_path = ""
         self.cesium_is_ready = False
+        self.cesium_playing = False
         self.cesium_sync_timer.stop()
 
     def cleanup_timeline_html(self):
@@ -869,6 +894,78 @@ class TelemetryApp(QMainWindow):
         )
         self.cesiumWidget.page().runJavaScript(js_code)
 
+    def _current_cesium_speed_value(self):
+        if not self.cesium_speed_combo:
+            return 1.0
+        text = self.cesium_speed_combo.currentText().lower().replace('x', '').strip()
+        try:
+            return float(text)
+        except ValueError:
+            return 1.0
+
+    def on_cesium_speed_changed(self, _value):
+        speed = self._current_cesium_speed_value()
+        if self.cesium_is_ready and self.cesiumWidget:
+            js_code = (
+                "if (typeof setPlaybackSpeed === 'function') {"
+                f"setPlaybackSpeed({speed});"
+                "}"
+            )
+            self.cesiumWidget.page().runJavaScript(js_code)
+        if self.timeline_is_ready and self.timelineWidget:
+            js_code = (
+                "if (typeof setTimelinePlaybackSpeed === 'function') {"
+                f"setTimelinePlaybackSpeed({speed});"
+                "}"
+            )
+            self.timelineWidget.page().runJavaScript(js_code)
+
+    def toggle_cesium_playback(self):
+        if not self.cesium_is_ready or not self.cesiumWidget:
+            return
+        if self.cesium_playing:
+            self.pause_cesium_playback()
+        else:
+            self.start_cesium_playback()
+
+    def start_cesium_playback(self):
+        if not self.cesium_is_ready or not self.cesiumWidget:
+            return
+        speed = self._current_cesium_speed_value()
+        js_code = (
+            "if (typeof playTrajectory === 'function') {"
+            f"playTrajectory({speed});"
+            "}"
+        )
+        self.cesiumWidget.page().runJavaScript(js_code)
+        if self.timeline_is_ready and self.timelineWidget:
+            timeline_js = (
+                "if (typeof playTimeline === 'function') {"
+                f"playTimeline({speed});"
+                "}"
+            )
+            self.timelineWidget.page().runJavaScript(timeline_js)
+        self.cesium_playing = True
+        self._update_cesium_play_button()
+        if not self.cesium_sync_timer.isActive():
+            self.cesium_sync_timer.start()
+
+    def pause_cesium_playback(self):
+        if not self.cesium_is_ready or not self.cesiumWidget:
+            return
+        js_code = "if (typeof pauseTrajectory === 'function') { pauseTrajectory(); }"
+        self.cesiumWidget.page().runJavaScript(js_code)
+        if self.timeline_is_ready and self.timelineWidget:
+            self.timelineWidget.page().runJavaScript("if (typeof pauseTimeline === 'function') { pauseTimeline(); }")
+        self.cesium_playing = False
+        self._update_cesium_play_button()
+
+    def _update_cesium_play_button(self):
+        if not self.cesium_play_button:
+            return
+        self.cesium_play_button.setText("Pausar ⏸" if self.cesium_playing else "Play ▶")
+        self.cesium_play_button.setEnabled(self.cesium_is_ready)
+
     def _update_cesium_controls_state(self):
         if not self.cesium_controls_container:
             return
@@ -884,6 +981,11 @@ class TelemetryApp(QMainWindow):
                 self.cesium_follow_checkbox.blockSignals(True)
                 self.cesium_follow_checkbox.setChecked(True)
                 self.cesium_follow_checkbox.blockSignals(False)
+        if self.cesium_play_button:
+            self.cesium_play_button.setEnabled(show_controls and self.cesium_is_ready)
+            self._update_cesium_play_button()
+        if self.cesium_speed_combo:
+            self.cesium_speed_combo.setEnabled(show_controls and self.cesium_is_ready)
 
     def create_cesium_viewer_html(self):
         try:
@@ -1113,6 +1215,12 @@ class TelemetryApp(QMainWindow):
             function julianFromMs(ms) {
                 return Cesium.JulianDate.fromDate(new Date(ms));
             }
+            let playbackSpeed = 1.0;
+            function applyPlaybackSpeed(speed) {
+                const safe = Number.isFinite(speed) ? speed : 1.0;
+                playbackSpeed = safe;
+                viewer.clock.multiplier = playbackSpeed;
+            }
             function findIndexForJulian(jd) {
                 if (!sampleTimes.length) return 0;
                 const currentMs = Cesium.JulianDate.toDate(jd).getTime();
@@ -1155,6 +1263,21 @@ class TelemetryApp(QMainWindow):
                     applyIndex(clamped);
                 }
             };
+            window.setPlaybackSpeed = function(speed) {
+                applyPlaybackSpeed(speed);
+            };
+            window.playTrajectory = function(speed) {
+                if (Number.isFinite(speed)) {
+                    applyPlaybackSpeed(speed);
+                }
+                if (startJulian) {
+                    viewer.clock.currentTime = viewer.clock.currentTime || startJulian.clone();
+                }
+                viewer.clock.shouldAnimate = true;
+            };
+            window.pauseTrajectory = function() {
+                viewer.clock.shouldAnimate = false;
+            };
             if (Array.isArray(samples) && samples.length) {
                 const firstValidTime = sampleTimes.find(t => t !== null);
                 const lastValidTime = [...sampleTimes].reverse().find(t => t !== null);
@@ -1165,6 +1288,7 @@ class TelemetryApp(QMainWindow):
                     viewer.clock.stopTime = stopJulian.clone();
                     viewer.clock.currentTime = startJulian.clone();
                     viewer.clock.clockRange = Cesium.ClockRange.CLAMPED;
+                    viewer.clock.multiplier = playbackSpeed;
                     viewer.clock.shouldAnimate = false;
                 }
                 const initialSample = samples.find(s => !!s);
@@ -1252,6 +1376,7 @@ class TelemetryApp(QMainWindow):
                 const sampleTimes = Array.isArray(samples)
                     ? samples.map(s => (s && Number.isFinite(s.timeMs)) ? s.timeMs : null)
                     : [];
+                let playbackSpeed = 1.0;
                 const viewer = new Cesium.Viewer('timelineContainer', {
                     animation: false,
                     timeline: true,
@@ -1281,6 +1406,11 @@ class TelemetryApp(QMainWindow):
                     }
                     return sampleTimes.length - 1;
                 }
+                function applyPlaybackSpeed(speed) {
+                    const safe = Number.isFinite(speed) ? speed : 1.0;
+                    playbackSpeed = safe;
+                    viewer.clock.multiplier = playbackSpeed;
+                }
                 function configureClock() {
                     if (!sampleTimes.length) {
                         if (viewer.timeline) {
@@ -1296,6 +1426,7 @@ class TelemetryApp(QMainWindow):
                         viewer.clock.startTime = start.clone();
                         viewer.clock.stopTime = stop.clone();
                         viewer.clock.currentTime = start.clone();
+                        viewer.clock.multiplier = playbackSpeed;
                         viewer.clock.clockRange = Cesium.ClockRange.CLAMPED;
                         viewer.clock.shouldAnimate = false;
                         if (viewer.timeline) {
@@ -1328,6 +1459,18 @@ class TelemetryApp(QMainWindow):
                         viewer.clock.currentTime = julianFromMs(t);
                         applyIndex(clamped);
                     }
+                };
+                window.setTimelinePlaybackSpeed = function(speed) {
+                    applyPlaybackSpeed(speed);
+                };
+                window.playTimeline = function(speed) {
+                    if (Number.isFinite(speed)) {
+                        applyPlaybackSpeed(speed);
+                    }
+                    viewer.clock.shouldAnimate = true;
+                };
+                window.pauseTimeline = function() {
+                    viewer.clock.shouldAnimate = false;
                 };
                 configureClock();
                 window.__timelineReady = true;
@@ -1529,7 +1672,10 @@ class TelemetryApp(QMainWindow):
 
         target_widget = None
         push_to_cesium = True
-        if self.timeline_is_ready and self.timelineWidget is not None:
+        if self.cesium_playing and self.cesium_is_ready and self.cesiumWidget is not None:
+            target_widget = self.cesiumWidget
+            push_to_cesium = False
+        elif self.timeline_is_ready and self.timelineWidget is not None:
             target_widget = self.timelineWidget
         elif self.cesium_is_ready and self.cesiumWidget is not None:
             target_widget = self.cesiumWidget

@@ -47,6 +47,7 @@ class AllPlotsWidget(QWidget):
         self.vlines = []        # InfiniteLines (cursor) por gráfico
         self._syncing = False
         self._plot_widgets = []
+        self.datalogger_df: pd.DataFrame | None = None
         self.current_log_name = ""
 
         # Timer de debounce para sincronizar X
@@ -70,8 +71,9 @@ class AllPlotsWidget(QWidget):
         scroll_area.setWidget(scroll_content)
 
     # ========== API pública ==========
-    def load_dataframe(self, df: pd.DataFrame, log_name: str = ""):
+    def load_dataframe(self, df: pd.DataFrame, log_name: str = "", datalogger_df: pd.DataFrame | None = None):
         self.df = df
+        self.datalogger_df = datalogger_df if isinstance(datalogger_df, pd.DataFrame) else None
         self.current_log_name = log_name or ""
         self._update_plots()
 
@@ -174,6 +176,38 @@ class AllPlotsWidget(QWidget):
         df_plot = self.df.copy()
         df_plot['_ts_'] = ts_epoch
 
+        overlay_plot_df = None
+        if self.datalogger_df is not None and not self.datalogger_df.empty and 'Timestamp' in self.datalogger_df.columns:
+            overlay_plot_df = self.datalogger_df.copy()
+            overlay_plot_df['_ts_'] = overlay_plot_df['Timestamp'].map(self._to_epoch_seconds)
+
+        aileron_overlays = []
+        aileron_styles = {}
+        aileron_secondary_label = None
+        if overlay_plot_df is not None:
+            if 'ServoL_PWM_us' in overlay_plot_df.columns:
+                aileron_overlays.append({
+                    'cols': ['ServoL_PWM_us'],
+                    'df': overlay_plot_df,
+                    'axis': 'secondary',
+                    'pen': {'color': (33, 150, 243), 'width': 2.4},
+                    'legend_prefix': 'Datalogger '
+                })
+                aileron_styles['AileronL'] = {'style': Qt.PenStyle.DashLine, 'width': 2.0, 'color': (33, 150, 243)}
+                aileron_secondary_label = "PWM (µs)"
+            if 'ServoR_PWM_us' in overlay_plot_df.columns:
+                aileron_overlays.append({
+                    'cols': ['ServoR_PWM_us'],
+                    'df': overlay_plot_df,
+                    'axis': 'secondary',
+                    'pen': {'color': (244, 67, 54), 'width': 2.4},
+                    'legend_prefix': 'Datalogger '
+                })
+                aileron_styles['AileronR'] = {'style': Qt.PenStyle.DashLine, 'width': 2.0, 'color': (244, 67, 54)}
+                aileron_secondary_label = "PWM (µs)"
+            if 'Aileron' in df_plot.columns:
+                aileron_styles.setdefault('Aileron', {'style': Qt.PenStyle.DashLine, 'width': 2.0, 'color': (76, 175, 80)})
+
         plotting_config = [
             {'title': 'Atitude da Aeronave', 'primary_y': {'cols': ['Roll', 'Pitch', 'Yaw'], 'label': 'Graus (°)'}},
             {'title': 'Altitude e Velocidade Vertical', 'primary_y': {'cols': ['AltitudeAbs', 'QNE'], 'label': 'Altitude (m)'},
@@ -186,7 +220,11 @@ class AllPlotsWidget(QWidget):
              'secondary_y': {'cols': ['Porcent_bat'], 'label': 'Bateria (%)'}},
             {'title': 'Dados de Voo (Air Data)', 'primary_y': {'cols': ['ASI', 'WSI'], 'label': 'Velocidade (m/s)'},
              'secondary_y': {'cols': ['WindDirection'], 'label': 'Direção do Vento (°)'}},
-            {'title': 'Comandos dos Atuadores', 'primary_y': {'cols': ['Elevator', 'Aileron'], 'label': 'Comando'}},
+            {'title': 'Comandos dos Atuadores',
+             'primary_y': {'cols': ['Elevator', 'Aileron', 'AileronL', 'AileronR'], 'label': 'Comando'},
+             'secondary_y': {'cols': [], 'label': aileron_secondary_label} if aileron_secondary_label else None,
+             'overlays': aileron_overlays,
+             'col_styles': aileron_styles},
             {'title': 'Motor', 'primary_y': {'cols': ['RPM'], 'label': 'RPM'},
              'secondary_y': {'cols': ['CHT'], 'label': 'Temperatura (°C)'}},
         ]
@@ -300,26 +338,51 @@ class AllPlotsWidget(QWidget):
         primary_series = []
         secondary_series = []
         plotted_cols = set()
+        col_styles = config.get('col_styles', {}) if isinstance(config.get('col_styles'), dict) else {}
+
+        def _append_series(target_list, column, source_df, step_flag, display_name=None, pen_override=None):
+            if column in source_df.columns and not source_df[column].isnull().all():
+                valid = source_df[['_ts_', column]].dropna()
+                if not valid.empty:
+                    target_list.append((display_name or column, valid, step_flag, pen_override, column))
+                    plotted_cols.add(column)
 
         if 'primary_y' in config:
             pconf = config['primary_y']
             step_mode_flag = True if pconf.get('style', '') == 'steps-post' else False
             for col in pconf['cols']:
-                if col in df_plot.columns and not df_plot[col].isnull().all():
-                    valid = df_plot[['_ts_', col]].dropna()
-                    if not valid.empty:
-                        primary_series.append((col, valid, step_mode_flag))
-                        plotted_cols.add(col)
+                _append_series(primary_series, col, df_plot, step_mode_flag)
 
         if 'secondary_y' in config:
             sconf = config['secondary_y']
             step_mode_sec_flag = True if sconf.get('style', '') == 'steps-post' else False
             for col in sconf['cols']:
-                if col in df_plot.columns and not df_plot[col].isnull().all():
-                    valid = df_plot[['_ts_', col]].dropna()
-                    if not valid.empty:
-                        secondary_series.append((col, valid, step_mode_sec_flag))
-                        plotted_cols.add(col)
+                _append_series(secondary_series, col, df_plot, step_mode_sec_flag)
+
+        overlays = config.get('overlays', []) if isinstance(config.get('overlays'), list) else []
+        for overlay in overlays:
+            if not overlay:
+                continue
+            source_df = overlay.get('df', df_plot)
+            if source_df is None or source_df.empty:
+                continue
+            axis_target = overlay.get('axis', 'primary')
+            cols = overlay.get('cols', [])
+            pen_override = overlay.get('pen') or {}
+            legend_prefix = overlay.get('legend_prefix', '') or ''
+            step_flag = True if overlay.get('style', '') == 'steps-post' else False
+            for col in cols:
+                if col not in source_df.columns or source_df[col].isnull().all():
+                    continue
+                display = f"{legend_prefix}{col}" if legend_prefix else col
+                _append_series(
+                    secondary_series if axis_target == 'secondary' else primary_series,
+                    col,
+                    source_df,
+                    step_flag,
+                    display_name=display,
+                    pen_override=pen_override
+                )
 
         if not primary_series and not secondary_series:
             return set()
@@ -356,12 +419,20 @@ class AllPlotsWidget(QWidget):
 
         if primary_series:
             pconf = config['primary_y']
-            for col, valid, step_flag in primary_series:
-                pen = pg.mkPen(color=next(colors), width=1.8)
+            for series_entry in primary_series:
+                col, valid, step_flag, pen_override, data_col = series_entry
+                style = dict(col_styles.get(col, {})) if isinstance(col_styles, dict) else {}
+                base_color = style.pop('color', next(colors))
+                pen_kwargs = {'color': base_color, 'width': 1.8}
+                if style:
+                    pen_kwargs.update(style)
+                if pen_override:
+                    pen_kwargs.update(pen_override)
+                pen = pg.mkPen(**pen_kwargs)
                 item = self._plot_series(
                     plot_item,
                     valid['_ts_'].to_numpy(),
-                    valid[col].to_numpy(),
+                    valid[data_col].to_numpy(),
                     name=col,
                     pen=pen,
                     step_mode_flag=step_flag
@@ -385,12 +456,20 @@ class AllPlotsWidget(QWidget):
             plot_item.vb.sigResized.connect(update_right_vb)
             update_right_vb()
 
-            for col, valid, step_flag in secondary_series:
-                pen = pg.mkPen(color=next(colors), width=1.8)
+            for series_entry in secondary_series:
+                col, valid, step_flag, pen_override, data_col = series_entry
+                style = dict(col_styles.get(col, {})) if isinstance(col_styles, dict) else {}
+                base_color = style.pop('color', next(colors))
+                pen_kwargs = {'color': base_color, 'width': 1.8}
+                if style:
+                    pen_kwargs.update(style)
+                if pen_override:
+                    pen_kwargs.update(pen_override)
+                pen = pg.mkPen(**pen_kwargs)
                 c = self._plot_series(
                     right_vb,
                     valid['_ts_'].to_numpy(),
-                    valid[col].to_numpy(),
+                    valid[data_col].to_numpy(),
                     name=col,
                     pen=pen,
                     step_mode_flag=step_flag
