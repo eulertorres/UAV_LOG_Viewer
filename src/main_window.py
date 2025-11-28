@@ -1450,6 +1450,12 @@ class TelemetryApp(QMainWindow):
                         applyIndex(idx);
                     }
                 });
+                if (viewer.timeline) {
+                    viewer.timeline.addEventListener('settime', function() {
+                        const idx = findIndexForJulian(viewer.clock.currentTime);
+                        applyIndex(idx);
+                    });
+                }
                 window.setTimelineIndex = function(index) {
                     if (!sampleTimes.length) return;
                     const clamped = clampIndex(index);

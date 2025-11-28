@@ -1,5 +1,5 @@
 # all_plots_widget.py — Tema branco + legendas completas + sync X com debounce
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea, QCheckBox, QGridLayout
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea, QCheckBox, QGridLayout, QHBoxLayout, QDoubleSpinBox
 from PyQt6.QtCore import Qt, QTimer
 import pandas as pd
 import numpy as np
@@ -49,6 +49,7 @@ class AllPlotsWidget(QWidget):
         self._plot_widgets = []
         self.datalogger_df: pd.DataFrame | None = None
         self.current_log_name = ""
+        self.datalogger_offset_sec: float = 0.0
 
         # Timer de debounce para sincronizar X
         self._sync_timer = QTimer(self)
@@ -59,6 +60,23 @@ class AllPlotsWidget(QWidget):
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
+
+        # Controles superiores (offset do datalogger)
+        self.datalogger_controls = QWidget()
+        controls_layout = QHBoxLayout(self.datalogger_controls)
+        controls_layout.setContentsMargins(4, 0, 4, 0)
+        controls_layout.setSpacing(6)
+        controls_layout.addWidget(QLabel("Offset do Datalogger (s):"))
+        self.datalogger_offset_spin = QDoubleSpinBox()
+        self.datalogger_offset_spin.setRange(-600.0, 600.0)
+        self.datalogger_offset_spin.setDecimals(3)
+        self.datalogger_offset_spin.setSingleStep(0.1)
+        self.datalogger_offset_spin.setValue(self.datalogger_offset_sec)
+        self.datalogger_offset_spin.valueChanged.connect(self._on_datalogger_offset_changed)
+        controls_layout.addWidget(self.datalogger_offset_spin)
+        controls_layout.addStretch(1)
+        self.datalogger_controls.hide()
+        main_layout.addWidget(self.datalogger_controls)
 
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
@@ -75,6 +93,7 @@ class AllPlotsWidget(QWidget):
         self.df = df
         self.datalogger_df = datalogger_df if isinstance(datalogger_df, pd.DataFrame) else None
         self.current_log_name = log_name or ""
+        self._update_datalogger_controls_visibility()
         self._update_plots()
 
     def update_cursor(self, timestamp):
@@ -161,6 +180,20 @@ class AllPlotsWidget(QWidget):
         self.vlines.clear()
         self._plot_widgets.clear()
 
+    def _update_datalogger_controls_visibility(self):
+        has_overlay = self.datalogger_df is not None and not self.datalogger_df.empty
+        self.datalogger_controls.setVisible(bool(has_overlay))
+        if not has_overlay:
+            self.datalogger_offset_sec = 0.0
+            self.datalogger_offset_spin.blockSignals(True)
+            self.datalogger_offset_spin.setValue(self.datalogger_offset_sec)
+            self.datalogger_offset_spin.blockSignals(False)
+
+    def _on_datalogger_offset_changed(self, value: float):
+        self.datalogger_offset_sec = float(value)
+        # Recalcula gráficos com o deslocamento aplicado
+        self._update_plots()
+
     def _update_plots(self):
         self._clear_plots()
 
@@ -179,7 +212,7 @@ class AllPlotsWidget(QWidget):
         overlay_plot_df = None
         if self.datalogger_df is not None and not self.datalogger_df.empty and 'Timestamp' in self.datalogger_df.columns:
             overlay_plot_df = self.datalogger_df.copy()
-            overlay_plot_df['_ts_'] = overlay_plot_df['Timestamp'].map(self._to_epoch_seconds)
+            overlay_plot_df['_ts_'] = overlay_plot_df['Timestamp'].map(self._to_epoch_seconds) + self.datalogger_offset_sec
 
         aileron_overlays = []
         aileron_styles = {}
@@ -207,6 +240,11 @@ class AllPlotsWidget(QWidget):
                 aileron_secondary_label = "PWM (µs)"
             if 'Aileron' in df_plot.columns:
                 aileron_styles.setdefault('Aileron', {'style': Qt.PenStyle.DashLine, 'width': 2.0, 'color': (76, 175, 80)})
+        else:
+            # sem datalogger: ainda usamos estilos consistentes para os comandos
+            aileron_styles.setdefault('AileronL', {'style': Qt.PenStyle.DashLine, 'width': 2.0, 'color': (33, 150, 243)})
+            aileron_styles.setdefault('AileronR', {'style': Qt.PenStyle.DashLine, 'width': 2.0, 'color': (244, 67, 54)})
+            aileron_styles.setdefault('Aileron', {'style': Qt.PenStyle.DashLine, 'width': 2.0, 'color': (76, 175, 80)})
 
         plotting_config = [
             {'title': 'Atitude da Aeronave', 'primary_y': {'cols': ['Roll', 'Pitch', 'Yaw'], 'label': 'Graus (°)'}},
@@ -236,8 +274,8 @@ class AllPlotsWidget(QWidget):
             config_cols = []
             if 'primary_y' in config:
                 config_cols.extend(config['primary_y']['cols'])
-            if 'secondary_y' in config:
-                config_cols.extend(config['secondary_y']['cols'])
+            if config.get('secondary_y'):
+                config_cols.extend(config['secondary_y'].get('cols', []))
 
             plotted = self._create_plot_from_config(config, df_plot)
             if plotted:
