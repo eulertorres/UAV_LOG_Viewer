@@ -21,8 +21,30 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtWebEngineCore import QWebEngineSettings
+from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEnginePage
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+
+
+class DebugWebPage(QWebEnginePage):
+    """WebEngine page that forwards console messages to Python debug logs."""
+
+    def __init__(self, debug_cb, parent=None):
+        super().__init__(parent)
+        self._debug_cb = debug_cb
+
+    def javaScriptConsoleMessage(self, level, message, line_number, source_id):
+        # Qt calls this virtual; we mirror the old signal-based logging.
+        try:
+            self._debug_cb(
+                "webview console",
+                level=int(level),
+                line=int(line_number),
+                source=str(source_id),
+                message=str(message),
+            )
+        except Exception:
+            pass
+        super().javaScriptConsoleMessage(level, message, line_number, source_id)
 
 
 class AllPlotsWidget(QWidget):
@@ -42,6 +64,7 @@ class AllPlotsWidget(QWidget):
         self._load_config()
 
         self.webview = QWebEngineView()
+        self.webview.setPage(DebugWebPage(self._debug, self.webview))
         self.webview.settings().setAttribute(
             QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
         )
@@ -60,12 +83,6 @@ class AllPlotsWidget(QWidget):
         self.webview.loadStarted.connect(
             lambda: self._debug(
                 "webview loadStarted", url=self.webview.url().toString(), last_path=getattr(self, "_last_html_path", None)
-            )
-        )
-        # Qt6 expõe a mensagem de console via javaScriptConsoleMessage
-        self.webview.page().javaScriptConsoleMessage.connect(
-            lambda level, msg, line, source: self._debug(
-                "webview console", level=int(level), line=int(line), source=str(source), message=str(msg)
             )
         )
         self._web_ready = False
