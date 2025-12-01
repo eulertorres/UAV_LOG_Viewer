@@ -6,6 +6,7 @@ import json       # Para parsear a saída JSON
 import pandas as pd
 import numpy as np
 import json
+from datetime import datetime
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from src.utils.resource_paths import find_decoder_executable
@@ -304,6 +305,31 @@ def _infer_base_time_from_parent(file_path, fallback_str="2024-01-01-00-00-00"):
         return base
     except Exception:
         return pd.to_datetime(fallback_str, format="%Y-%m-%d-%H-%M-%S", errors="coerce")
+
+
+def _extract_creation_date_from_log(file_path):
+    """
+    Procura pela linha "Log creation date:" no cabeçalho do arquivo .log e retorna
+    um pd.Timestamp com a data (hora zerada) quando disponível.
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for _ in range(40):  # examina apenas o início do arquivo
+                line = f.readline()
+                if not line:
+                    break
+                if 'Log creation date:' in line:
+                    parts = line.split('Log creation date:')
+                    if len(parts) >= 2:
+                        date_str = parts[1].strip()
+                        try:
+                            dt = datetime.strptime(date_str, "%a %b %d %H:%M:%S %Y")
+                            return pd.Timestamp(dt.date())
+                        except ValueError:
+                            pass
+        return None
+    except Exception:
+        return None
 
 
 def parse_afgs_monitoring_log(file_path):
@@ -1012,7 +1038,8 @@ def parse_log_file(file_path):
 
     df = pd.DataFrame(data)
 
-    base_time = _infer_base_time_from_parent(file_path)
+    creation_base = _extract_creation_date_from_log(file_path)
+    base_time = creation_base if creation_base is not None else _infer_base_time_from_parent(file_path)
     time_deltas = pd.to_timedelta(df['Timestamp_str'], errors='coerce')
     df['Timestamp'] = (base_time + time_deltas).where(time_deltas.notna())
     df = df.dropna(subset=['Timestamp']).reset_index(drop=True)
