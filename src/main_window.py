@@ -35,11 +35,14 @@ from src.data_parser import LogProcessingWorker
 from src.widgets.standard_plots_widget import StandardPlotsWidget
 from src.widgets.all_plots_widget import AllPlotsWidget
 from src.widgets.custom_plot_widget import CustomPlotWidget
+from src.utils.config_manager import load_config
 from src.utils.local_server import MapServer
 from src.utils.pdf_reporter import PdfReportWorker
 from src.utils.resource_paths import get_logs_directory, resource_path
 from src.utils.sharepoint_downloader import SharePointClient, SharePointCredentialError
 from src.widgets.log_download_dialog import LogDownloadDialog
+from src.widgets.options_dialog import OptionsDialog
+from src.utils.mode_utils import compute_mode_segments, build_mode_path_segments
 
 AIRCRAFT_ICON_PATH = resource_path('aircraft.svg')
 WIND_ICON_PATH = resource_path('seta.svg')
@@ -94,6 +97,8 @@ class TelemetryApp(QMainWindow):
         self.thread = None
         self.worker = None
 
+        self.app_config = load_config()
+
         self.default_logs_dir = DEFAULT_LOGS_DIR
         self.last_logs_root = DEFAULT_LOGS_DIR
 
@@ -122,7 +127,7 @@ class TelemetryApp(QMainWindow):
         self.timeline_html_path = ""
         self.timeline_is_ready = False
         self.cesium_sync_timer = QTimer(self)
-        self.cesium_sync_timer.setInterval(120)
+        self.cesium_sync_timer.setInterval(self._current_sync_interval())
         self.cesium_sync_timer.timeout.connect(self._sync_cesium_timeline_into_app)
         self.cesium_imagery_presets = [
             {
@@ -204,6 +209,9 @@ class TelemetryApp(QMainWindow):
 
         # --- Controles Superiores ---
         top_controls_layout = QHBoxLayout()
+        self.btn_options = QPushButton("Opções")
+        self.btn_options.clicked.connect(self.open_options_dialog)
+        top_controls_layout.addWidget(self.btn_options)
         self.btn_open = QPushButton("Selecionar Diretório Raiz dos Logs")
         self.btn_open.clicked.connect(self.open_log_directories)
         top_controls_layout.addWidget(self.btn_open)
@@ -373,6 +381,12 @@ class TelemetryApp(QMainWindow):
             return
 
         self._start_loading_from_path(root_path)
+
+    def open_options_dialog(self):
+        dialog = OptionsDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.app_config = load_config()
+            self.cesium_sync_timer.setInterval(self._current_sync_interval())
 
     def open_sharepoint_downloader(self):
         if self.sharepoint_client is None:
@@ -647,8 +661,17 @@ class TelemetryApp(QMainWindow):
         m = folium.Map(location=map_center, zoom_start=15)
         self.map_js_name = m.get_name() # Guarda o nome JS do mapa principal
 
-        # --- Rota e marcadores de início/fim ---
-        folium.PolyLine(coords, color="blue", weight=3, opacity=0.8).add_to(m)
+        mode_segments = compute_mode_segments(self.df)
+        mode_paths = build_mode_path_segments(self.df, mode_segments)
+        if mode_paths:
+            for seg in mode_paths:
+                seg_coords = [(lat, lon) for lat, lon, _ in seg['points']]
+                if len(seg_coords) < 2:
+                    continue
+                folium.PolyLine(seg_coords, color=self._rgb_to_hex(seg['color']), weight=3, opacity=0.9,
+                                tooltip=seg.get('label', '')).add_to(m)
+        else:
+            folium.PolyLine(coords, color="blue", weight=3, opacity=0.8).add_to(m)
         folium.Marker(location=coords[0], popup="Início", icon=folium.Icon(color="green")).add_to(m)
         folium.Marker(location=coords[-1], popup="Fim", icon=folium.Icon(color="red")).add_to(m)
 
@@ -894,6 +917,7 @@ class TelemetryApp(QMainWindow):
             imagery_config_literal = json.dumps(self.cesium_imagery_presets)
             default_imagery_key = json.dumps(self.current_cesium_imagery_key)
             samples_literal = json.dumps(self._build_cesium_samples())
+            mode_paths_literal = json.dumps(self._build_cesium_mode_paths())
             html_template = Template("""<!DOCTYPE html>
 <html lang='pt-BR'>
 <head>
@@ -970,6 +994,7 @@ class TelemetryApp(QMainWindow):
             }, {});
             const defaultImageryKey = $DEFAULT_IMAGERY_KEY;
             const samples = $SAMPLES_JSON;
+            const modePaths = $MODE_PATHS_JSON;
             const sampleTimes = Array.isArray(samples)
                 ? samples.map(s => (s && Number.isFinite(s.timeMs)) ? s.timeMs : null)
                 : [];
@@ -1012,6 +1037,33 @@ class TelemetryApp(QMainWindow):
             window.setImageryLayer = function(key) {
                 return applyImageryLayer(key);
             };
+            const modePolylineCollection = viewer.scene.primitives.add(new Cesium.PolylineCollection());
+            function colorFromRgb(rgb, alpha) {
+                const r = Number.isFinite(rgb?.[0]) ? rgb[0] : 33;
+                const g = Number.isFinite(rgb?.[1]) ? rgb[1] : 150;
+                const b = Number.isFinite(rgb?.[2]) ? rgb[2] : 243;
+                return Cesium.Color.fromBytes(r, g, b, alpha ?? 200);
+            }
+            function toCartesianFromPoints(list) {
+                const arr = [];
+                for (const p of list || []) {
+                    if (!Number.isFinite(p?.lon) || !Number.isFinite(p?.lat)) continue;
+                    arr.push(p.lon, p.lat, Number.isFinite(p.alt) ? p.alt : 0.0);
+                }
+                return arr.length ? Cesium.Cartesian3.fromDegreesArrayHeights(arr) : [];
+            }
+            if (Array.isArray(modePaths)) {
+                modePaths.forEach(seg => {
+                    const positions = toCartesianFromPoints(seg?.points);
+                    if (positions.length >= 2) {
+                        modePolylineCollection.add({
+                            positions,
+                            width: 3,
+                            material: colorFromRgb(seg?.color, 235)
+                        });
+                    }
+                });
+            }
             const scratchHPR = new Cesium.HeadingPitchRoll();
             const defaultPosition = Cesium.Cartesian3.fromDegrees(-47.9, -15.7, 1000.0);
             const aircraftEntity = viewer.entities.add({
@@ -1199,7 +1251,8 @@ class TelemetryApp(QMainWindow):
                 PLANE_LITERAL=plane_literal,
                 IMAGERY_CONFIG_JSON=imagery_config_literal,
                 DEFAULT_IMAGERY_KEY=default_imagery_key,
-                SAMPLES_JSON=samples_literal
+                SAMPLES_JSON=samples_literal,
+                MODE_PATHS_JSON=mode_paths_literal
             )
             output_name = f"cesium_view_{int(time.time()*1000)}.html"
             output_path = os.path.join(self.map_server.get_temp_dir(), output_name)
@@ -1617,12 +1670,26 @@ class TelemetryApp(QMainWindow):
                 return normalized
         return 0.0
 
+    def _current_sync_interval(self) -> int:
+        sync_cfg = self.app_config.get('sync', {}) if isinstance(self.app_config, dict) else {}
+        try:
+            return max(30, int(sync_cfg.get('timeline_frequency_ms', 120)))
+        except Exception:
+            return 120
+
     def _update_altitude_reference(self):
         if self.df.empty or 'AltitudeAbs' not in self.df.columns:
             self.altitude_reference = 0.0
             return
         first_valid = self.df['AltitudeAbs'].dropna()
         self.altitude_reference = float(first_valid.iloc[0]) if not first_valid.empty else 0.0
+
+    def _rgb_to_hex(self, color_tuple):
+        try:
+            r, g, b = color_tuple
+            return '#{0:02x}{1:02x}{2:02x}'.format(int(r), int(g), int(b))
+        except Exception:
+            return '#2196f3'
 
     def _build_cesium_samples(self):
         samples = []
@@ -1643,11 +1710,34 @@ class TelemetryApp(QMainWindow):
                     'heading': float(self._extract_heading_deg(row)),
                     'pitch': float(row.get('Pitch', 0) if pd.notna(row.get('Pitch', 0)) else 0),
                     'roll': float(row.get('Roll', 0) if pd.notna(row.get('Roll', 0)) else 0),
-                    'timeMs': time_ms
+                    'timeMs': time_ms,
+                    'mode': int(row.get('ModoVoo')) if pd.notna(row.get('ModoVoo', None)) else None
                 })
             else:
                 samples.append(None)
         return samples
+
+    def _build_cesium_mode_paths(self):
+        segments = compute_mode_segments(self.df)
+        paths = build_mode_path_segments(self.df, segments)
+        result = []
+        for seg in paths:
+            pts = []
+            for lat, lon, alt in seg['points']:
+                if lat is None or lon is None:
+                    continue
+                pts.append({
+                    'lat': float(lat),
+                    'lon': float(lon),
+                    'alt': float(self._compute_relative_altitude(alt)) if alt is not None else 0.0,
+                })
+            if len(pts) >= 2:
+                result.append({
+                    'label': seg.get('label', ''),
+                    'color': seg.get('color', (33, 150, 243)),
+                    'points': pts
+                })
+        return result
 
     def set_timestamp_manually(self):
         if self.df.empty: return

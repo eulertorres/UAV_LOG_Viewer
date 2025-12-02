@@ -1,7 +1,8 @@
 # all_plots_widget.py — Tema branco + legendas completas + sync X com debounce
-from dataclasses import dataclass
-
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea, QCheckBox, QGridLayout
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel, QScrollArea, QCheckBox, QGridLayout, QHBoxLayout,
+    QPushButton, QDialog, QDialogButtonBox, QFormLayout
+)
 from PyQt6.QtCore import Qt, QTimer
 import pandas as pd
 import numpy as np
@@ -12,6 +13,9 @@ from datetime import datetime
 import pyqtgraph as pg
 from pyqtgraph.exporters import ImageExporter
 
+from src.utils.config_manager import load_config, update_config_section
+from src.utils.mode_utils import ModeSegment, compute_mode_segments
+
 # ---- Compat/performance + TEMA BRANCO
 pg.setConfigOptions(
     antialias=False,
@@ -20,13 +24,6 @@ pg.setConfigOptions(
     foreground='k'    # textos/linhas padrão pretos
 )
 
-
-@dataclass
-class ModeSegment:
-    start: float
-    end: float
-    label: str
-    color: tuple
 
 class DateAxisItem(pg.AxisItem):
     """Eixo X que formata timestamps (segundos desde epoch) como HH:MM:SS."""
@@ -38,6 +35,27 @@ class DateAxisItem(pg.AxisItem):
             except Exception:
                 out.append('')
         return out
+
+
+class GraphMenuDialog(QDialog):
+    def __init__(self, titles: list[str], current_state: dict[str, bool], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Gráficos visíveis")
+        self._titles = titles
+        self._checkboxes: dict[str, QCheckBox] = {}
+        layout = QFormLayout(self)
+        for title in titles:
+            cb = QCheckBox(title)
+            cb.setChecked(current_state.get(title, True))
+            self._checkboxes[title] = cb
+            layout.addRow(cb)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def get_states(self) -> dict[str, bool]:
+        return {title: cb.isChecked() for title, cb in self._checkboxes.items()}
 
 class AllPlotsWidget(QWidget):
     """
@@ -59,6 +77,9 @@ class AllPlotsWidget(QWidget):
         self._plot_widgets = []
         self.current_log_name = ""
         self._mode_segments: list[ModeSegment] = []
+        self._config = load_config()
+        self._timeline_widget = None
+        self._available_graph_titles: list[str] = []
 
         # Timer de debounce para sincronizar X
         self._sync_timer = QTimer(self)
@@ -70,9 +91,29 @@ class AllPlotsWidget(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
 
+        header_container = QWidget()
+        header_layout = QVBoxLayout(header_container)
+        header_layout.setContentsMargins(0, 0, 0, 8)
+
+        controls_row = QHBoxLayout()
+        controls_row.setContentsMargins(0, 0, 0, 0)
+        controls_row.setSpacing(8)
+        self.graph_menu_btn = QPushButton("Configurar gráficos visíveis")
+        self.graph_menu_btn.clicked.connect(self._open_graph_menu)
+        controls_row.addWidget(self.graph_menu_btn)
+        controls_row.addStretch(1)
+        header_layout.addLayout(controls_row)
+
+        self.timeline_holder = QVBoxLayout()
+        self.timeline_holder.setContentsMargins(0, 0, 0, 0)
+        header_layout.addLayout(self.timeline_holder)
+
+        main_layout.addWidget(header_container)
+
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setStyleSheet("background-color: white; border: none;")
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         main_layout.addWidget(scroll_area)
 
         scroll_content = QWidget()
@@ -170,6 +211,7 @@ class AllPlotsWidget(QWidget):
         self.vlines.clear()
         self._plot_widgets.clear()
         self._mode_segments = []
+        self._clear_timeline()
 
     def _update_plots(self):
         self._clear_plots()
@@ -186,7 +228,7 @@ class AllPlotsWidget(QWidget):
         df_plot = self.df.copy()
         df_plot['_ts_'] = ts_epoch
 
-        self._mode_segments = self._compute_mode_segments(df_plot)
+        self._mode_segments = compute_mode_segments(df_plot)
         if self._mode_segments:
             self._add_mode_timeline(df_plot)
 
@@ -207,10 +249,14 @@ class AllPlotsWidget(QWidget):
              'secondary_y': {'cols': ['CHT'], 'label': 'Temperatura (°C)'}},
         ]
 
+        self._register_graph_titles([c['title'] for c in plotting_config])
+
         plotted_cols = set()
         graphs_added = bool(self._mode_segments)
 
         for config in plotting_config:
+            if not self._is_graph_enabled(config['title']):
+                continue
             config_cols = []
             if 'primary_y' in config:
                 config_cols.extend(config['primary_y']['cols'])
@@ -226,7 +272,10 @@ class AllPlotsWidget(QWidget):
                           if c not in plotted_cols and c not in ('_ts_',) and 'Timestamp' not in c]
 
         grouped_configs = self._build_remaining_configs(remaining_cols, df_plot)
+        self._register_graph_titles([c['title'] for c in grouped_configs])
         for config in grouped_configs:
+            if not self._is_graph_enabled(config['title']):
+                continue
             plotted = self._create_plot_from_config(config, df_plot)
             if plotted:
                 graphs_added = True
@@ -243,6 +292,33 @@ class AllPlotsWidget(QWidget):
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setStyleSheet("color: gray; font-size: 14px;")
         self.plots_layout.addWidget(label)
+
+    # ---------- Configuração de gráficos ----------
+    def _register_graph_titles(self, titles: list[str]):
+        graph_cfg = self._config.get('graphs', {}) if isinstance(self._config, dict) else {}
+        changed = False
+        for title in titles:
+            if title not in graph_cfg:
+                graph_cfg[title] = True
+                changed = True
+        self._available_graph_titles = sorted(set(self._available_graph_titles + titles))
+        if changed:
+            self._config = update_config_section('graphs', graph_cfg)
+
+    def _is_graph_enabled(self, title: str) -> bool:
+        graphs = self._config.get('graphs', {}) if isinstance(self._config, dict) else {}
+        if title not in graphs:
+            self._register_graph_titles([title])
+        return graphs.get(title, True)
+
+    def _open_graph_menu(self):
+        if not self._available_graph_titles:
+            return
+        dialog = GraphMenuDialog(self._available_graph_titles, self._config.get('graphs', {}), self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_states = dialog.get_states()
+            self._config = update_config_section('graphs', new_states)
+            self._update_plots()
 
     def _create_placeholder_plot(self, title):
         plotw = pg.PlotWidget(axisItems={'bottom': DateAxisItem(orientation='bottom')})
@@ -530,78 +606,6 @@ class AllPlotsWidget(QWidget):
             self.vlines.append(line)
 
     # ---------- Faixas de modo de voo ----------
-    def _compute_mode_segments(self, df_plot: pd.DataFrame):
-        if 'ModoVoo' not in df_plot.columns or df_plot.empty:
-            return []
-
-        try:
-            mode_data = df_plot[['_ts_', 'ModoVoo']].dropna().sort_values('_ts_')
-        except Exception:
-            return []
-
-        if mode_data.empty:
-            return []
-
-        palette = self._resolve_mode_palette(df_plot)
-        segments: list[ModeSegment] = []
-
-        ts_values = mode_data['_ts_'].to_numpy(dtype=float)
-        mode_values = mode_data['ModoVoo'].to_numpy(dtype=int)
-
-        current_mode = mode_values[0]
-        start_ts = ts_values[0]
-
-        def _append_segment(seg_start, seg_end, mode_value):
-            if seg_end <= seg_start:
-                return
-            label, color = palette.get(mode_value, (f"Modo {mode_value}", (160, 160, 160)))
-            segments.append(ModeSegment(seg_start, seg_end, label, color))
-
-        for idx in range(1, len(ts_values)):
-            ts = ts_values[idx]
-            mode_val = mode_values[idx]
-            if mode_val != current_mode:
-                _append_segment(start_ts, ts, current_mode)
-                start_ts = ts
-                current_mode = mode_val
-
-        try:
-            last_ts = float(df_plot['_ts_'].max())
-        except Exception:
-            last_ts = ts_values[-1] if len(ts_values) else start_ts
-        _append_segment(start_ts, last_ts, current_mode)
-
-        return segments
-
-    def _resolve_mode_palette(self, df_plot: pd.DataFrame):
-        fw_modes = {
-            -1: ("RC Mode", (96, 125, 139)),
-            0: ("Subir (RTL)", (3, 155, 229)),
-            1: ("Manual (FW150)", (33, 150, 243)),
-            2: ("SEMI", (0, 188, 212)),
-            3: ("Survey", (76, 175, 80)),
-            4: ("Tracking", (255, 202, 40)),
-            5: ("Orbit", (255, 112, 67)),
-            8: ("Landing", (244, 67, 54)),
-            9: ("TakeOff", (141, 110, 99)),
-        }
-
-        rw_modes = {
-            0: ("Stabilize", (3, 169, 244)),
-            1: ("IDLE", (120, 144, 156)),
-            2: ("AUTO", (76, 175, 80)),
-            3: ("Forced Land", (244, 67, 54)),
-        }
-
-        is_rw = False
-        if 'isVTOL' in df_plot.columns:
-            try:
-                is_rw = bool(df_plot['isVTOL'].dropna().astype(float).mean() >= 0.5)
-            except Exception:
-                is_rw = False
-
-        return rw_modes if is_rw else fw_modes
-
     def _add_mode_timeline(self, df_plot: pd.DataFrame):
         if not self._mode_segments:
             return
@@ -640,7 +644,7 @@ class AllPlotsWidget(QWidget):
 
         self.axes_list.append(plot_item.vb)
         self._plot_widgets.append(timeline)
-        self.plots_layout.addWidget(timeline)
+        self._set_timeline_widget(timeline)
 
     def _add_mode_regions(self, plot_item: pg.PlotItem):
         if not self._mode_segments:
@@ -650,6 +654,17 @@ class AllPlotsWidget(QWidget):
             region = pg.LinearRegionItem(values=(seg.start, seg.end), brush=pg.mkBrush(*seg.color, 45), movable=False)
             region.setZValue(-10)
             plot_item.addItem(region)
+
+    def _set_timeline_widget(self, widget: pg.PlotWidget):
+        self._clear_timeline()
+        self._timeline_widget = widget
+        self.timeline_holder.addWidget(widget)
+
+    def _clear_timeline(self):
+        if self._timeline_widget:
+            self.timeline_holder.removeWidget(self._timeline_widget)
+            self._timeline_widget.deleteLater()
+            self._timeline_widget = None
 
     # ---------- Utilidades ----------
     @staticmethod
