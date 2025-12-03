@@ -9,6 +9,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "sync": {
         "timeline_frequency_ms": 120,
     },
+    "gpu": {
+        "preferred_index": None,
+    },
 }
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
@@ -24,6 +27,12 @@ def _ensure_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(user_sync, dict):
         sync_cfg.update({k: v for k, v in user_sync.items() if v is not None})
     merged["sync"] = sync_cfg
+
+    gpu_cfg = DEFAULT_CONFIG["gpu"].copy()
+    user_gpu = config.get("gpu", {}) if isinstance(config, dict) else {}
+    if isinstance(user_gpu, dict):
+        gpu_cfg.update({k: v for k, v in user_gpu.items() if v is not None})
+    merged["gpu"] = gpu_cfg
     return merged
 
 

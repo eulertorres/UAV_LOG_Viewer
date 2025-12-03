@@ -90,6 +90,9 @@ class AllPlotsWidget(QWidget):
         self._config = load_config()
         self._legend_widget = None
         self._available_graph_titles: list[str] = []
+        self._pending_df = pd.DataFrame()
+        self._pending_log_name = ""
+        self._plots_dirty = False
 
         # Timer de debounce para sincronizar X
         self._sync_timer = QTimer(self)
@@ -125,9 +128,18 @@ class AllPlotsWidget(QWidget):
 
     # ========== API pública ==========
     def load_dataframe(self, df: pd.DataFrame, log_name: str = ""):
-        self.df = df
-        self.current_log_name = log_name or ""
-        self._update_plots()
+        self._pending_df = df
+        self._pending_log_name = log_name or ""
+        self._plots_dirty = True
+        if self.isVisible():
+            self._apply_pending_update()
+
+    def ensure_ready(self):
+        self._apply_pending_update()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._apply_pending_update()
 
     def update_cursor(self, timestamp):
         if self.df.empty or not self.vlines:
@@ -323,7 +335,12 @@ class AllPlotsWidget(QWidget):
         if not isinstance(states, dict):
             return
         self._config = update_config_section('graphs', states)
-        self._update_plots()
+        if self._pending_df is None or self._pending_df.empty:
+            self._pending_df = self.df
+            self._pending_log_name = self.current_log_name
+        self._plots_dirty = True
+        if self.isVisible():
+            self._apply_pending_update()
 
     def _create_placeholder_plot(self, title):
         plotw = pg.PlotWidget(axisItems={'bottom': DateAxisItem(orientation='bottom')})
@@ -335,6 +352,14 @@ class AllPlotsWidget(QWidget):
         vb.setRange(xRange=(0, 1), yRange=(0, 1), disableAutoRange=True)
         txt.setPos(0.5, 0.5)
         self.plots_layout.addWidget(plotw)
+
+    def _apply_pending_update(self):
+        if not self._plots_dirty:
+            return
+        self.df = self._pending_df
+        self.current_log_name = self._pending_log_name
+        self._plots_dirty = False
+        self._update_plots()
 
     def _build_remaining_configs(self, columns, df_plot):
         grouped = {}

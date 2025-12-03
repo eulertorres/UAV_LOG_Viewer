@@ -42,6 +42,7 @@ from src.utils.resource_paths import get_logs_directory, resource_path
 from src.utils.sharepoint_downloader import SharePointClient, SharePointCredentialError
 from src.widgets.log_download_dialog import LogDownloadDialog
 from src.widgets.options_dialog import OptionsDialog
+from src.utils.gpu_utils import apply_best_gpu_env
 from src.utils.mode_utils import compute_mode_segments, build_mode_path_segments
 
 AIRCRAFT_ICON_PATH = resource_path('aircraft.svg')
@@ -98,6 +99,7 @@ class TelemetryApp(QMainWindow):
         self.worker = None
 
         self.app_config = load_config()
+        self.selected_gpu = apply_best_gpu_env(self.app_config.get("gpu", {}).get("preferred_index"))
 
         self.default_logs_dir = DEFAULT_LOGS_DIR
         self.last_logs_root = DEFAULT_LOGS_DIR
@@ -265,6 +267,7 @@ class TelemetryApp(QMainWindow):
         self.tabs = QTabWidget()
         self.setup_tabs() # Cria e adiciona as abas ao QTabWidget
         self.splitter.addWidget(self.tabs) # Adiciona o QTabWidget ao splitter
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
         # --- Painel Direito (APENAS o Mapa) ---
         map_panel_widget = QWidget()
@@ -317,6 +320,12 @@ class TelemetryApp(QMainWindow):
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([1800, 420])
+
+        if self.selected_gpu:
+            self.statusBar().showMessage(
+                f"GPU preferencial: #{self.selected_gpu.index} ({self.selected_gpu.name})",
+                5000,
+            )
 
     def _configure_webview(self, webview):
         if not webview:
@@ -626,6 +635,13 @@ class TelemetryApp(QMainWindow):
         finally:
             self.loading_widget.stop_animation()
             self.loading_widget.close()
+
+    def _on_tab_changed(self, index):
+        if not self.tabs:
+            return
+        widget = self.tabs.widget(index)
+        if widget is self.all_plots_tab and self.all_plots_tab:
+            self.all_plots_tab.ensure_ready()
 
     def build_cesium_state_from_dataframe(self):
         if self.df.empty:
