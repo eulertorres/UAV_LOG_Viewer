@@ -1189,10 +1189,10 @@ class TelemetryApp(QMainWindow):
             const completedPath = viewer.entities.add({
                 polyline: {
                     positions: [],
-                    width: 3,
+                    width: 4,
                     material: new Cesium.PolylineGlowMaterialProperty({
-                        glowPower: 0.08,
-                        color: Cesium.Color.CYAN.withAlpha(0.85)
+                        glowPower: 0.12,
+                        color: Cesium.Color.WHITE.withAlpha(0.95)
                     })
                 }
             });
@@ -1200,7 +1200,7 @@ class TelemetryApp(QMainWindow):
                 polyline: {
                     positions: [],
                     width: 3,
-                    material: Cesium.Color.CYAN.withAlpha(0.18)
+                    material: Cesium.Color.WHITE.withAlpha(0.25)
                 }
             });
             function toCartesian(pts) {
