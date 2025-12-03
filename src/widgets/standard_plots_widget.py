@@ -1,6 +1,16 @@
 # src/widgets/standard_plots_widget.py
 
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QMessageBox, QGroupBox, QRadioButton)
+from PyQt6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QMessageBox,
+    QGroupBox,
+    QRadioButton,
+    QPushButton,
+    QLabel,
+    QGridLayout,
+)
 from PyQt6.QtCore import Qt
 import pandas as pd
 import numpy as np
@@ -12,7 +22,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 
-class StandardPlotsWidget(QWidget):
+class StandardPlotWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.df = pd.DataFrame() # DataFrame ativo
@@ -38,7 +48,7 @@ class StandardPlotsWidget(QWidget):
             self.radio_rpy,
             self.radio_variance,
         ]
-        self.radio_position.setChecked(True)
+        self.radio_rpy.setChecked(True)
         
         for r in self.radios:
             r.toggled.connect(self.update_plot) # Conecta ao método local
@@ -55,17 +65,47 @@ class StandardPlotsWidget(QWidget):
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas, stretch=1)
 
-    def load_dataframe(self, df, log_name = ""):
+    def load_dataframe(self, df, log_name = "", autoplot=True):
         """Recebe o DataFrame da janela principal."""
         self.df = df
         self.current_log_name = log_name
-        self.show_position_plot()
-        self.update_plot() # Atualiza o gráfico com os novos dados
+        if autoplot:
+            self.show_rpy_plot()
+            self.update_plot() # Atualiza o gráfico com os novos dados
+        elif self.figure.get_axes():
+            self.update_plot()
 
+    def show_rpy_plot(self):
+        """Força o gráfico padrão a exibir RPY como inicial."""
+        if not self.radio_rpy.isChecked():
+            self.radio_rpy.setChecked(True)
+
+    def show_plot_by_key(self, key: str):
+        mapping = {
+            "position": self.radio_position,
+            "wind": self.radio_wind_variability,
+            "rpy": self.radio_rpy,
+            "variance": self.radio_variance,
+            "voltage": None,
+        }
+        target = mapping.get(key)
+        if target:
+            if target.isChecked():
+                self.update_plot()
+            else:
+                target.setChecked(True)
+            return
+        if key == "voltage":
+            self.radio_position.setChecked(False)
+            self.radio_wind_variability.setChecked(False)
+            self.radio_rpy.setChecked(False)
+            self.radio_variance.setChecked(False)
+            self.plot_voltage()
+
+    # Compatibilidade com chamadas antigas: manter o mesmo comportamento
+    # padrão (RPY) quando a janela principal ainda invoca show_position_plot.
     def show_position_plot(self):
-        """Força o gráfico padrão a exibir o plot de posicionamento."""
-        if not self.radio_position.isChecked():
-            self.radio_position.setChecked(True)
+        self.show_rpy_plot()
 
     def update_cursor(self, timestamp):
         """Atualiza a linha vertical (cursor) no gráfico."""
@@ -506,3 +546,79 @@ class StandardPlotsWidget(QWidget):
         else: # Se nenhum estiver checado (caso raro), limpa
              self.figure.clear()
              self.canvas.draw()
+
+
+class StandardPlotsWidget(QWidget):
+    """Launcher that spawns individual plot windows on demand."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.df = pd.DataFrame()
+        self.current_log_name = ""
+        self._open_windows = []
+
+        layout = QVBoxLayout(self)
+        header = QLabel(
+            "Selecione um gráfico para gerar. Cada gráfico abrirá em uma nova janela para reduzir o processamento."
+        )
+        header.setWordWrap(True)
+        layout.addWidget(header)
+
+        grid = QGridLayout()
+        layout.addLayout(grid)
+
+        buttons = [
+            ("Posicionamento", "position"),
+            ("Variabilidade Vento", "wind"),
+            ("Roll/Pitch/Yaw", "rpy"),
+            ("Variância RPY/Alt", "variance"),
+            ("Tensão", "voltage"),
+        ]
+
+        for idx, (label, key) in enumerate(buttons):
+            btn = QPushButton(label)
+            btn.setMinimumHeight(60)
+            btn.setStyleSheet("font-size: 16px; font-weight: bold;")
+            btn.clicked.connect(lambda _, k=key: self.open_plot(k))
+            row = idx // 2
+            col = idx % 2
+            grid.addWidget(btn, row, col)
+
+    def load_dataframe(self, df, log_name=""):
+        self.df = df
+        self.current_log_name = log_name
+        for window in list(self._open_windows):
+            if window.isVisible():
+                window.load_dataframe(df, log_name, autoplot=False)
+            else:
+                self._open_windows.remove(window)
+
+    def show_position_plot(self):
+        # Mantém compatibilidade com chamadas antigas sem abrir gráficos automaticamente.
+        return
+
+    def open_plot(self, key):
+        if self.df.empty:
+            QMessageBox.information(self, "Informação", "Carregue um log antes de gerar gráficos.")
+            return
+        window = StandardPlotWindow(self)
+        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        window.load_dataframe(self.df, self.current_log_name, autoplot=False)
+        window.show_plot_by_key(key)
+        window.show()
+        window.destroyed.connect(lambda _=None, w=window: self._open_windows.remove(w) if w in self._open_windows else None)
+        self._open_windows.append(window)
+
+    def update_cursor(self, timestamp):
+        for window in list(self._open_windows):
+            if window.isVisible():
+                window.update_cursor(timestamp)
+            else:
+                self._open_windows.remove(window)
+
+    def set_time_window(self, start_ts, end_ts):
+        for window in list(self._open_windows):
+            if window.isVisible():
+                window.set_time_window(start_ts, end_ts)
+            else:
+                self._open_windows.remove(window)
