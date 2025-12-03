@@ -35,11 +35,14 @@ from src.data_parser import LogProcessingWorker
 from src.widgets.standard_plots_widget import StandardPlotsWidget
 from src.widgets.all_plots_widget import AllPlotsWidget
 from src.widgets.custom_plot_widget import CustomPlotWidget
+from src.utils.config_manager import load_config
 from src.utils.local_server import MapServer
 from src.utils.pdf_reporter import PdfReportWorker
 from src.utils.resource_paths import get_logs_directory, resource_path
 from src.utils.sharepoint_downloader import SharePointClient, SharePointCredentialError
 from src.widgets.log_download_dialog import LogDownloadDialog
+from src.widgets.options_dialog import OptionsDialog
+from src.utils.mode_utils import compute_mode_segments, build_mode_path_segments
 
 AIRCRAFT_ICON_PATH = resource_path('aircraft.svg')
 WIND_ICON_PATH = resource_path('seta.svg')
@@ -94,6 +97,8 @@ class TelemetryApp(QMainWindow):
         self.thread = None
         self.worker = None
 
+        self.app_config = load_config()
+
         self.default_logs_dir = DEFAULT_LOGS_DIR
         self.last_logs_root = DEFAULT_LOGS_DIR
 
@@ -122,7 +127,7 @@ class TelemetryApp(QMainWindow):
         self.timeline_html_path = ""
         self.timeline_is_ready = False
         self.cesium_sync_timer = QTimer(self)
-        self.cesium_sync_timer.setInterval(120)
+        self.cesium_sync_timer.setInterval(self._current_sync_interval())
         self.cesium_sync_timer.timeout.connect(self._sync_cesium_timeline_into_app)
         self.cesium_imagery_presets = [
             {
@@ -204,6 +209,9 @@ class TelemetryApp(QMainWindow):
 
         # --- Controles Superiores ---
         top_controls_layout = QHBoxLayout()
+        self.btn_options = QPushButton("Opções")
+        self.btn_options.clicked.connect(self.open_options_dialog)
+        top_controls_layout.addWidget(self.btn_options)
         self.btn_open = QPushButton("Selecionar Diretório Raiz dos Logs")
         self.btn_open.clicked.connect(self.open_log_directories)
         top_controls_layout.addWidget(self.btn_open)
@@ -303,10 +311,12 @@ class TelemetryApp(QMainWindow):
         self.layout.addWidget(self.splitter, 1) 
 
         # --- Controles da Timeline (Abaixo do Splitter, largura total) ---
-        self.setup_timeline_controls(self.layout) 
+        self.setup_timeline_controls(self.layout)
 
-        # Define os tamanhos iniciais do splitter
-        self.splitter.setSizes([1000, 600])
+        # Define os tamanhos iniciais do splitter (favorece espaço para os gráficos)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([1800, 420])
 
     def _configure_webview(self, webview):
         if not webview:
@@ -373,6 +383,25 @@ class TelemetryApp(QMainWindow):
             return
 
         self._start_loading_from_path(root_path)
+
+    def open_options_dialog(self):
+        graphs_titles = []
+        graph_states = {}
+        apply_graphs_cb = None
+        if hasattr(self, 'all_plots_tab') and self.all_plots_tab:
+            graphs_titles = self.all_plots_tab.get_available_graph_titles()
+            graph_states = self.all_plots_tab.get_graph_states()
+            apply_graphs_cb = self.all_plots_tab.apply_graph_visibility
+
+        dialog = OptionsDialog(
+            self,
+            graph_titles=graphs_titles,
+            graph_states=graph_states,
+            apply_graphs_callback=apply_graphs_cb,
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.app_config = load_config()
+            self.cesium_sync_timer.setInterval(self._current_sync_interval())
 
     def open_sharepoint_downloader(self):
         if self.sharepoint_client is None:
@@ -598,6 +627,28 @@ class TelemetryApp(QMainWindow):
             self.loading_widget.stop_animation()
             self.loading_widget.close()
 
+    def build_cesium_state_from_dataframe(self):
+        if self.df.empty:
+            return None
+        if 'Latitude' not in self.df.columns or 'Longitude' not in self.df.columns:
+            return None
+
+        samples = self._build_cesium_samples()
+        valid_samples = [s for s in samples if s and pd.notna(s.get('lat')) and pd.notna(s.get('lon'))]
+        if len(valid_samples) < 2:
+            return None
+
+        times = [s.get('timeMs') for s in valid_samples if s and s.get('timeMs') is not None]
+        start_ms = min(times) if times else None
+        end_ms = max(times) if times else None
+
+        return {
+            'count': len(valid_samples),
+            'startMs': start_ms,
+            'endMs': end_ms,
+            'hasModes': any(s.get('mode') is not None for s in valid_samples)
+        }
+
     # --- Funções do Mapa e Timeline ---
     
     def on_map_load_finished(self, ok):
@@ -647,8 +698,17 @@ class TelemetryApp(QMainWindow):
         m = folium.Map(location=map_center, zoom_start=15)
         self.map_js_name = m.get_name() # Guarda o nome JS do mapa principal
 
-        # --- Rota e marcadores de início/fim ---
-        folium.PolyLine(coords, color="blue", weight=3, opacity=0.8).add_to(m)
+        mode_segments = compute_mode_segments(self.df)
+        mode_paths = build_mode_path_segments(self.df, mode_segments)
+        if mode_paths:
+            for seg in mode_paths:
+                seg_coords = [(lat, lon) for lat, lon, _ in seg['points']]
+                if len(seg_coords) < 2:
+                    continue
+                folium.PolyLine(seg_coords, color=self._rgb_to_hex(seg['color']), weight=3, opacity=0.9,
+                                tooltip=seg.get('label', '')).add_to(m)
+        else:
+            folium.PolyLine(coords, color="blue", weight=3, opacity=0.8).add_to(m)
         folium.Marker(location=coords[0], popup="Início", icon=folium.Icon(color="green")).add_to(m)
         folium.Marker(location=coords[-1], popup="Fim", icon=folium.Icon(color="red")).add_to(m)
 
@@ -894,6 +954,7 @@ class TelemetryApp(QMainWindow):
             imagery_config_literal = json.dumps(self.cesium_imagery_presets)
             default_imagery_key = json.dumps(self.current_cesium_imagery_key)
             samples_literal = json.dumps(self._build_cesium_samples())
+            mode_paths_literal = json.dumps(self._build_cesium_mode_paths())
             html_template = Template("""<!DOCTYPE html>
 <html lang='pt-BR'>
 <head>
@@ -970,6 +1031,7 @@ class TelemetryApp(QMainWindow):
             }, {});
             const defaultImageryKey = $DEFAULT_IMAGERY_KEY;
             const samples = $SAMPLES_JSON;
+            const modePaths = $MODE_PATHS_JSON;
             const sampleTimes = Array.isArray(samples)
                 ? samples.map(s => (s && Number.isFinite(s.timeMs)) ? s.timeMs : null)
                 : [];
@@ -1012,6 +1074,39 @@ class TelemetryApp(QMainWindow):
             window.setImageryLayer = function(key) {
                 return applyImageryLayer(key);
             };
+            const modePolylineCollection = viewer.scene.primitives.add(new Cesium.PolylineCollection());
+            function colorFromRgb(rgb, alpha) {
+                const r = Number.isFinite(rgb?.[0]) ? rgb[0] : 33;
+                const g = Number.isFinite(rgb?.[1]) ? rgb[1] : 150;
+                const b = Number.isFinite(rgb?.[2]) ? rgb[2] : 243;
+                return Cesium.Color.fromBytes(r, g, b, alpha ?? 200);
+            }
+            function toCartesianFromPoints(list) {
+                const arr = [];
+                for (const p of list || []) {
+                    if (!Number.isFinite(p?.lon) || !Number.isFinite(p?.lat)) continue;
+                    arr.push(p.lon, p.lat, Number.isFinite(p.alt) ? p.alt : 0.0);
+                }
+                return arr.length ? Cesium.Cartesian3.fromDegreesArrayHeights(arr) : [];
+            }
+            try {
+                if (Array.isArray(modePaths)) {
+                    modePaths.forEach(seg => {
+                        const positions = toCartesianFromPoints(seg?.points);
+                        if (positions.length >= 2) {
+                            modePolylineCollection.add({
+                                positions,
+                                width: 3,
+                                material: Cesium.Material.fromType('Color', {
+                                    color: colorFromRgb(seg?.color, 235)
+                                })
+                            });
+                        }
+                    });
+                }
+            } catch (err) {
+                console.error('Mode path render fallback', err);
+            }
             const scratchHPR = new Cesium.HeadingPitchRoll();
             const defaultPosition = Cesium.Cartesian3.fromDegrees(-47.9, -15.7, 1000.0);
             const aircraftEntity = viewer.entities.add({
@@ -1199,7 +1294,8 @@ class TelemetryApp(QMainWindow):
                 PLANE_LITERAL=plane_literal,
                 IMAGERY_CONFIG_JSON=imagery_config_literal,
                 DEFAULT_IMAGERY_KEY=default_imagery_key,
-                SAMPLES_JSON=samples_literal
+                SAMPLES_JSON=samples_literal,
+                MODE_PATHS_JSON=mode_paths_literal
             )
             output_name = f"cesium_view_{int(time.time()*1000)}.html"
             output_path = os.path.join(self.map_server.get_temp_dir(), output_name)
@@ -1211,8 +1307,28 @@ class TelemetryApp(QMainWindow):
             return ""
 
     def create_cesium_timeline_html(self):
+        def _write_html(content: str) -> str:
+            output_name = f"cesium_timeline_{int(time.time()*1000)}.html"
+            output_path = os.path.join(self.map_server.get_temp_dir(), output_name)
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            return output_path
+
         try:
-            samples_literal = json.dumps(self._build_cesium_samples())
+            try:
+                samples = self._build_cesium_samples()
+                has_time = any(s and s.get('timeMs') is not None for s in samples)
+                if not samples or not has_time:
+                    fallback = """<!DOCTYPE html>
+    <html><head><meta charset='utf-8'><style>html,body,#t{margin:0;padding:0;width:100%;height:100%;background:#000;}</style></head>
+    <body><div id='t'></div><script>window.__timelineReady=true;window.__currentTimelineIndex=0;</script></body></html>
+    """
+                    return _write_html(fallback)
+                samples_literal = json.dumps(samples)
+            except Exception as exc:
+                print(f"[timeline] amostragem padrão usada por erro: {exc}")
+                samples_literal = "[]"
+
             html_template = Template("""<!DOCTYPE html>
     <html lang='pt-BR'>
     <head>
@@ -1228,6 +1344,7 @@ class TelemetryApp(QMainWindow):
                 overflow: hidden;
                 background: #01030a;
             }
+            #timelineContainer { position: relative; }
             #timelineContainer .cesium-viewer-cesiumWidgetContainer,
             #timelineContainer .cesium-viewer-toolbar,
             #timelineContainer .cesium-viewer-fullscreenContainer,
@@ -1248,103 +1365,125 @@ class TelemetryApp(QMainWindow):
         <script src='https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/Cesium.js'></script>
         <script>
             (function () {
-                const samples = $SAMPLES_JSON;
-                const sampleTimes = Array.isArray(samples)
-                    ? samples.map(s => (s && Number.isFinite(s.timeMs)) ? s.timeMs : null)
-                    : [];
-                const viewer = new Cesium.Viewer('timelineContainer', {
-                    animation: false,
-                    timeline: true,
-                    shouldAnimate: false,
-                    imageryProvider: false,
-                    baseLayerPicker: false,
-                    geocoder: false,
-                    sceneModePicker: false,
-                    navigationHelpButton: false,
-                    fullscreenButton: false,
-                    homeButton: false,
-                    infoBox: false,
-                    selectionIndicator: false
-                });
-                viewer.scene.canvas.style.display = 'none';
-                viewer.cesiumWidget.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
-                function julianFromMs(ms) { return Cesium.JulianDate.fromDate(new Date(ms)); }
-                function clampIndex(idx) { return Math.max(0, Math.min(samples.length - 1, Number(idx) || 0)); }
-                function findIndexForJulian(jd) {
-                    if (!sampleTimes.length) return 0;
-                    const currentMs = Cesium.JulianDate.toDate(jd).getTime();
-                    for (let i = 0; i < sampleTimes.length; i++) {
-                        const t = sampleTimes[i];
-                        if (t === null) continue;
-                        const next = sampleTimes[Math.min(sampleTimes.length - 1, i + 1)];
-                        if (currentMs <= (next ?? currentMs)) { return i; }
-                    }
-                    return sampleTimes.length - 1;
-                }
-                function configureClock() {
-                    if (!sampleTimes.length) {
-                        if (viewer.timeline) {
-                            viewer.timeline.zoomTo(viewer.clock.startTime, viewer.clock.stopTime);
+                let viewer = null;
+                try {
+                    const samples = $SAMPLES_JSON;
+                    const sampleTimes = Array.isArray(samples)
+                        ? samples.map(s => (s && Number.isFinite(s.timeMs)) ? s.timeMs : null)
+                        : [];
+                    viewer = new Cesium.Viewer('timelineContainer', {
+                        animation: false,
+                        timeline: true,
+                        shouldAnimate: false,
+                        imageryProvider: false,
+                        baseLayerPicker: false,
+                        geocoder: false,
+                        sceneModePicker: false,
+                        navigationHelpButton: false,
+                        fullscreenButton: false,
+                        homeButton: false,
+                        infoBox: false,
+                        selectionIndicator: false
+                    });
+                    viewer.scene.canvas.style.display = 'none';
+                    viewer.cesiumWidget.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+                    function julianFromMs(ms) { return Cesium.JulianDate.fromDate(new Date(ms)); }
+                    function clampIndex(idx) { return Math.max(0, Math.min(samples.length - 1, Number(idx) || 0)); }
+                    function findIndexForJulian(jd) {
+                        if (!sampleTimes.length) return 0;
+                        const currentMs = Cesium.JulianDate.toDate(jd).getTime();
+                        for (let i = 0; i < sampleTimes.length; i++) {
+                            const t = sampleTimes[i];
+                            if (t === null) continue;
+                            const next = sampleTimes[Math.min(sampleTimes.length - 1, i + 1)];
+                            if (currentMs <= (next ?? currentMs)) { return i; }
                         }
-                        return;
+                        return sampleTimes.length - 1;
                     }
-                    const firstValidTime = sampleTimes.find(t => t !== null);
-                    const lastValidTime = [...sampleTimes].reverse().find(t => t !== null);
-                    if (Number.isFinite(firstValidTime) && Number.isFinite(lastValidTime)) {
-                        const start = julianFromMs(firstValidTime);
-                        const stop = julianFromMs(lastValidTime);
-                        viewer.clock.startTime = start.clone();
-                        viewer.clock.stopTime = stop.clone();
-                        viewer.clock.currentTime = start.clone();
-                        viewer.clock.clockRange = Cesium.ClockRange.CLAMPED;
-                        viewer.clock.shouldAnimate = false;
-                        if (viewer.timeline) {
-                            viewer.timeline.zoomTo(start, stop);
+                    function configureClock() {
+                        if (!sampleTimes.length) {
+                            if (viewer.timeline) {
+                                viewer.timeline.zoomTo(viewer.clock.startTime, viewer.clock.stopTime);
+                            }
+                            return;
+                        }
+                        const firstValidTime = sampleTimes.find(t => t !== null);
+                        const lastValidTime = [...sampleTimes].reverse().find(t => t !== null);
+                        if (Number.isFinite(firstValidTime) && Number.isFinite(lastValidTime)) {
+                            const start = julianFromMs(firstValidTime);
+                            const stop = julianFromMs(lastValidTime);
+                            viewer.clock.startTime = start.clone();
+                            viewer.clock.stopTime = stop.clone();
+                            viewer.clock.currentTime = start.clone();
+                            viewer.clock.clockRange = Cesium.ClockRange.CLAMPED;
+                            viewer.clock.shouldAnimate = false;
+                            if (viewer.timeline) {
+                                viewer.timeline.zoomTo(start, stop);
+                            }
                         }
                     }
-                }
-                let currentIndex = 0;
-                window.__currentTimelineIndex = 0;
-                function applyIndex(idx) {
-                    if (!Array.isArray(samples) || !samples.length) return;
-                    const clamped = clampIndex(idx);
-                    if (clamped === currentIndex && !viewer.clock.shouldAnimate) return;
-                    currentIndex = clamped;
-                    window.__currentTimelineIndex = clamped;
-                }
-                viewer.clock.onTick.addEventListener(function(clock) {
-                    if (!sampleTimes.length) return;
-                    const idx = findIndexForJulian(clock.currentTime);
-                    if (idx !== currentIndex || clock.shouldAnimate) {
-                        applyIndex(idx);
+                    let currentIndex = 0;
+                    window.__currentTimelineIndex = 0;
+                    function applyIndex(idx) {
+                        if (!Array.isArray(samples) || !samples.length) return;
+                        const clamped = clampIndex(idx);
+                        if (clamped === currentIndex && !viewer.clock.shouldAnimate) return;
+                        currentIndex = clamped;
+                        window.__currentTimelineIndex = clamped;
                     }
-                });
-                window.setTimelineIndex = function(index) {
-                    if (!sampleTimes.length) return;
-                    const clamped = clampIndex(index);
-                    const t = sampleTimes[clamped];
-                    if (Number.isFinite(t)) {
-                        viewer.clock.shouldAnimate = false;
-                        viewer.clock.currentTime = julianFromMs(t);
-                        applyIndex(clamped);
+                    viewer.clock.onTick.addEventListener(function(clock) {
+                        if (!sampleTimes.length) return;
+                        const idx = findIndexForJulian(clock.currentTime);
+                        if (idx !== currentIndex || clock.shouldAnimate) {
+                            applyIndex(idx);
+                        }
+                    });
+                    window.setTimelineIndex = function(index) {
+                        if (!sampleTimes.length) return;
+                        const clamped = clampIndex(index);
+                        const t = sampleTimes[clamped];
+                        if (Number.isFinite(t)) {
+                            viewer.clock.shouldAnimate = false;
+                            viewer.clock.currentTime = julianFromMs(t);
+                            applyIndex(clamped);
+                        }
+                    };
+                    configureClock();
+                    window.__timelineReady = true;
+                } catch (err) {
+                    console.error('Timeline fallback', err);
+                    const container = document.getElementById('timelineContainer');
+                    if (container) {
+                        container.style.background = '#000';
                     }
-                };
-                configureClock();
-                window.__timelineReady = true;
+                    window.__timelineReady = true;
+                } finally {
+                    if (viewer && viewer.timeline && !viewer.isDestroyed()) {
+                        try { viewer.timeline.resize(); } catch (e) {}
+                    }
+                    if (!window.__timelineReady) {
+                        window.__timelineReady = true;
+                    }
+                }
             })();
         </script>
     </body>
     </html>
     """)
-            html_content = html_template.substitute(SAMPLES_JSON=samples_literal)
-            output_name = f"cesium_timeline_{int(time.time()*1000)}.html"
-            output_path = os.path.join(self.map_server.get_temp_dir(), output_name)
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-            return output_path
+            html_content = html_template.substitute(
+                SAMPLES_JSON=samples_literal
+            )
+            return _write_html(html_content)
         except Exception as exc:
-            QMessageBox.warning(self, "Timeline", f"Não foi possível preparar a timeline: {exc}")
-            return ""
+            try:
+                self.statusBar().showMessage("Timeline simples carregada (fallback).", 4000)
+                fallback = """<!DOCTYPE html>
+    <html><head><meta charset='utf-8'><style>html,body,#t{margin:0;padding:0;width:100%;height:100%;background:#000;}</style></head>
+    <body><div id='t'></div><script>window.__timelineReady=true;window.__currentTimelineIndex=0;</script></body></html>
+    """
+                return _write_html(fallback)
+            except Exception:
+                return ""
 
     def show_cesium_3d_view(self):
         self.cleanup_cesium_html()
@@ -1373,9 +1512,14 @@ class TelemetryApp(QMainWindow):
 
     def on_timeline_load_finished(self, ok):
         if ok:
-            self._wait_for_timeline_ready()
+            if self.df.empty:
+                self.timeline_is_ready = True
+                self.statusBar().showMessage("Timeline pronta (sem dados carregados).", 2000)
+            else:
+                self._wait_for_timeline_ready()
         else:
-            self.timeline_is_ready = False
+            self.timeline_is_ready = True
+            self.statusBar().showMessage("Timeline simples carregada.", 4000)
 
     def _wait_for_timeline_ready(self, retries=20):
         if not self.timelineWidget:
@@ -1391,8 +1535,10 @@ class TelemetryApp(QMainWindow):
             elif retries > 0:
                 QTimer.singleShot(200, lambda: self._wait_for_timeline_ready(retries - 1))
             else:
-                self.timeline_is_ready = False
-                self.statusBar().showMessage("Não consegui sincronizar a timeline.", 4000)
+                self.timeline_is_ready = True
+                self.statusBar().showMessage("Timeline básica ativa (fallback).", 4000)
+                if not self.cesium_sync_timer.isActive():
+                    self.cesium_sync_timer.start()
 
         try:
             self.timelineWidget.page().runJavaScript("Boolean(window.__timelineReady)", _handle_ready)
@@ -1617,12 +1763,26 @@ class TelemetryApp(QMainWindow):
                 return normalized
         return 0.0
 
+    def _current_sync_interval(self) -> int:
+        sync_cfg = self.app_config.get('sync', {}) if isinstance(self.app_config, dict) else {}
+        try:
+            return max(30, int(sync_cfg.get('timeline_frequency_ms', 120)))
+        except Exception:
+            return 120
+
     def _update_altitude_reference(self):
         if self.df.empty or 'AltitudeAbs' not in self.df.columns:
             self.altitude_reference = 0.0
             return
         first_valid = self.df['AltitudeAbs'].dropna()
         self.altitude_reference = float(first_valid.iloc[0]) if not first_valid.empty else 0.0
+
+    def _rgb_to_hex(self, color_tuple):
+        try:
+            r, g, b = color_tuple
+            return '#{0:02x}{1:02x}{2:02x}'.format(int(r), int(g), int(b))
+        except Exception:
+            return '#2196f3'
 
     def _build_cesium_samples(self):
         samples = []
@@ -1643,11 +1803,49 @@ class TelemetryApp(QMainWindow):
                     'heading': float(self._extract_heading_deg(row)),
                     'pitch': float(row.get('Pitch', 0) if pd.notna(row.get('Pitch', 0)) else 0),
                     'roll': float(row.get('Roll', 0) if pd.notna(row.get('Roll', 0)) else 0),
-                    'timeMs': time_ms
+                    'timeMs': time_ms,
+                    'mode': int(row.get('ModoVoo')) if pd.notna(row.get('ModoVoo', None)) else None
                 })
             else:
                 samples.append(None)
         return samples
+
+    def _build_cesium_mode_paths(self):
+        segments = compute_mode_segments(self.df)
+        paths = build_mode_path_segments(self.df, segments)
+        result = []
+        for seg in paths:
+            pts = []
+            for lat, lon, alt in seg['points']:
+                if lat is None or lon is None:
+                    continue
+                pts.append({
+                    'lat': float(lat),
+                    'lon': float(lon),
+                    'alt': float(self._compute_relative_altitude(alt)) if alt is not None else 0.0,
+                })
+            if len(pts) >= 2:
+                result.append({
+                    'label': seg.get('label', ''),
+                    'color': seg.get('color', (33, 150, 243)),
+                    'points': pts
+                })
+        return result
+
+    def _build_mode_segments_for_timeline(self):
+        segments = compute_mode_segments(self.df)
+        mode_blocks = []
+        for seg in segments:
+            start_ms = int(seg.start * 1000)
+            end_ms = int(seg.end * 1000)
+            if end_ms <= start_ms:
+                continue
+            mode_blocks.append({
+                'startMs': start_ms,
+                'endMs': end_ms,
+                'color': seg.color,
+            })
+        return mode_blocks
 
     def set_timestamp_manually(self):
         if self.df.empty: return

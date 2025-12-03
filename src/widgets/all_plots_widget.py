@@ -1,5 +1,8 @@
 # all_plots_widget.py — Tema branco + legendas completas + sync X com debounce
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea, QCheckBox, QGridLayout
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel, QScrollArea, QCheckBox, QGridLayout, QHBoxLayout,
+    QPushButton, QDialog, QDialogButtonBox
+)
 from PyQt6.QtCore import Qt, QTimer
 import pandas as pd
 import numpy as np
@@ -10,6 +13,9 @@ from datetime import datetime
 import pyqtgraph as pg
 from pyqtgraph.exporters import ImageExporter
 
+from src.utils.config_manager import load_config, update_config_section
+from src.utils.mode_utils import ModeSegment, compute_mode_segments
+
 # ---- Compat/performance + TEMA BRANCO
 pg.setConfigOptions(
     antialias=False,
@@ -17,6 +23,7 @@ pg.setConfigOptions(
     background='w',   # fundo branco
     foreground='k'    # textos/linhas padrão pretos
 )
+
 
 class DateAxisItem(pg.AxisItem):
     """Eixo X que formata timestamps (segundos desde epoch) como HH:MM:SS."""
@@ -28,6 +35,37 @@ class DateAxisItem(pg.AxisItem):
             except Exception:
                 out.append('')
         return out
+
+
+class GraphMenuDialog(QDialog):
+    def __init__(self, titles: list[str], current_state: dict[str, bool], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Gráficos visíveis")
+        self._titles = titles
+        self._checkboxes: dict[str, QCheckBox] = {}
+        grid_layout = QGridLayout()
+        grid_layout.setContentsMargins(0, 0, 0, 0)
+        grid_layout.setHorizontalSpacing(12)
+        grid_layout.setVerticalSpacing(6)
+        columns = 10
+        for idx, title in enumerate(titles):
+            cb = QCheckBox(title)
+            cb.setChecked(current_state.get(title, True))
+            self._checkboxes[title] = cb
+            row = idx // columns
+            col = idx % columns
+            grid_layout.addWidget(cb, row, col)
+
+        root_layout = QVBoxLayout(self)
+        root_layout.addLayout(grid_layout)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root_layout.addWidget(buttons)
+
+    def get_states(self) -> dict[str, bool]:
+        return {title: cb.isChecked() for title, cb in self._checkboxes.items()}
 
 class AllPlotsWidget(QWidget):
     """
@@ -48,6 +86,10 @@ class AllPlotsWidget(QWidget):
         self._syncing = False
         self._plot_widgets = []
         self.current_log_name = ""
+        self._mode_segments: list[ModeSegment] = []
+        self._config = load_config()
+        self._legend_widget = None
+        self._available_graph_titles: list[str] = []
 
         # Timer de debounce para sincronizar X
         self._sync_timer = QTimer(self)
@@ -59,9 +101,21 @@ class AllPlotsWidget(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
 
+        header_container = QWidget()
+        header_container.setMaximumHeight(120)
+        header_layout = QVBoxLayout(header_container)
+        header_layout.setContentsMargins(0, 0, 0, 8)
+
+        self.legend_holder = QVBoxLayout()
+        self.legend_holder.setContentsMargins(0, 0, 0, 0)
+        header_layout.addLayout(self.legend_holder)
+
+        main_layout.addWidget(header_container)
+
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setStyleSheet("background-color: white; border: none;")
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         main_layout.addWidget(scroll_area)
 
         scroll_content = QWidget()
@@ -158,6 +212,8 @@ class AllPlotsWidget(QWidget):
         self.axes_list.clear()
         self.vlines.clear()
         self._plot_widgets.clear()
+        self._mode_segments = []
+        self._clear_legend()
 
     def _update_plots(self):
         self._clear_plots()
@@ -173,6 +229,9 @@ class AllPlotsWidget(QWidget):
         ts_epoch = self.df['Timestamp'].map(self._to_epoch_seconds)
         df_plot = self.df.copy()
         df_plot['_ts_'] = ts_epoch
+
+        self._mode_segments = compute_mode_segments(df_plot)
+        self._add_mode_legend()
 
         plotting_config = [
             {'title': 'Atitude da Aeronave', 'primary_y': {'cols': ['Roll', 'Pitch', 'Yaw'], 'label': 'Graus (°)'}},
@@ -191,10 +250,14 @@ class AllPlotsWidget(QWidget):
              'secondary_y': {'cols': ['CHT'], 'label': 'Temperatura (°C)'}},
         ]
 
+        self._register_graph_titles([c['title'] for c in plotting_config])
+
         plotted_cols = set()
-        graphs_added = False
+        graphs_added = bool(self._mode_segments)
 
         for config in plotting_config:
+            if not self._is_graph_enabled(config['title']):
+                continue
             config_cols = []
             if 'primary_y' in config:
                 config_cols.extend(config['primary_y']['cols'])
@@ -210,7 +273,10 @@ class AllPlotsWidget(QWidget):
                           if c not in plotted_cols and c not in ('_ts_',) and 'Timestamp' not in c]
 
         grouped_configs = self._build_remaining_configs(remaining_cols, df_plot)
+        self._register_graph_titles([c['title'] for c in grouped_configs])
         for config in grouped_configs:
+            if not self._is_graph_enabled(config['title']):
+                continue
             plotted = self._create_plot_from_config(config, df_plot)
             if plotted:
                 graphs_added = True
@@ -227,6 +293,37 @@ class AllPlotsWidget(QWidget):
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setStyleSheet("color: gray; font-size: 14px;")
         self.plots_layout.addWidget(label)
+
+    # ---------- Configuração de gráficos ----------
+    def _register_graph_titles(self, titles: list[str]):
+        graph_cfg = self._config.get('graphs', {}) if isinstance(self._config, dict) else {}
+        changed = False
+        for title in titles:
+            if title not in graph_cfg:
+                graph_cfg[title] = True
+                changed = True
+        self._available_graph_titles = sorted(set(self._available_graph_titles + titles))
+        if changed:
+            self._config = update_config_section('graphs', graph_cfg)
+
+    def _is_graph_enabled(self, title: str) -> bool:
+        graphs = self._config.get('graphs', {}) if isinstance(self._config, dict) else {}
+        if title not in graphs:
+            self._register_graph_titles([title])
+        return graphs.get(title, True)
+
+    def get_available_graph_titles(self) -> list[str]:
+        return list(self._available_graph_titles)
+
+    def get_graph_states(self) -> dict[str, bool]:
+        graphs = self._config.get('graphs', {}) if isinstance(self._config, dict) else {}
+        return graphs if isinstance(graphs, dict) else {}
+
+    def apply_graph_visibility(self, states: dict[str, bool]):
+        if not isinstance(states, dict):
+            return
+        self._config = update_config_section('graphs', states)
+        self._update_plots()
 
     def _create_placeholder_plot(self, title):
         plotw = pg.PlotWidget(axisItems={'bottom': DateAxisItem(orientation='bottom')})
@@ -414,6 +511,8 @@ class AllPlotsWidget(QWidget):
         self.plots_layout.addWidget(container)
         self._plot_widgets.append(plotw)
 
+        self._add_mode_regions(plot_item)
+
         return plotted_cols
 
     def _format_plot_title(self, base_title: str) -> str:
@@ -510,6 +609,69 @@ class AllPlotsWidget(QWidget):
             line.hide()
             plotw.addItem(line)
             self.vlines.append(line)
+
+    # ---------- Faixas de modo de voo ----------
+    def _add_mode_legend(self):
+        if not self._mode_segments:
+            self._clear_legend()
+            return
+
+        seen = set()
+        unique_segments: list[ModeSegment] = []
+        for seg in self._mode_segments:
+            if seg.mode_value in seen:
+                continue
+            seen.add(seg.mode_value)
+            unique_segments.append(seg)
+
+        if not unique_segments:
+            self._clear_legend()
+            return
+
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(2, 0, 2, 4)
+        layout.setSpacing(6)
+
+        for seg in unique_segments:
+            swatch = QLabel()
+            swatch.setFixedSize(14, 14)
+            swatch.setStyleSheet(
+                f"background-color: rgb({seg.color[0]}, {seg.color[1]}, {seg.color[2]});"
+                "border: 1px solid #666; border-radius: 2px;"
+            )
+            text = QLabel(seg.label)
+            text.setStyleSheet("font-size: 11px; color: #333;")
+            item = QWidget()
+            item_layout = QHBoxLayout(item)
+            item_layout.setContentsMargins(0, 0, 0, 0)
+            item_layout.setSpacing(4)
+            item_layout.addWidget(swatch)
+            item_layout.addWidget(text)
+            layout.addWidget(item)
+
+        layout.addStretch(1)
+        self._set_legend_widget(container)
+
+    def _add_mode_regions(self, plot_item: pg.PlotItem):
+        if not self._mode_segments:
+            return
+
+        for seg in self._mode_segments:
+            region = pg.LinearRegionItem(values=(seg.start, seg.end), brush=pg.mkBrush(*seg.color, 45), movable=False)
+            region.setZValue(-10)
+            plot_item.addItem(region)
+
+    def _set_legend_widget(self, widget: QWidget):
+        self._clear_legend()
+        self._legend_widget = widget
+        self.legend_holder.addWidget(widget)
+
+    def _clear_legend(self):
+        if self._legend_widget:
+            self.legend_holder.removeWidget(self._legend_widget)
+            self._legend_widget.deleteLater()
+            self._legend_widget = None
 
     # ---------- Utilidades ----------
     @staticmethod

@@ -38,7 +38,7 @@ class StandardPlotsWidget(QWidget):
             self.radio_rpy,
             self.radio_variance,
         ]
-        self.radio_position.setChecked(True)
+        self.radio_rpy.setChecked(True)
         
         for r in self.radios:
             r.toggled.connect(self.update_plot) # Conecta ao método local
@@ -59,13 +59,13 @@ class StandardPlotsWidget(QWidget):
         """Recebe o DataFrame da janela principal."""
         self.df = df
         self.current_log_name = log_name
-        self.show_position_plot()
+        self.show_rpy_plot()
         self.update_plot() # Atualiza o gráfico com os novos dados
 
-    def show_position_plot(self):
-        """Força o gráfico padrão a exibir o plot de posicionamento."""
-        if not self.radio_position.isChecked():
-            self.radio_position.setChecked(True)
+    def show_rpy_plot(self):
+        """Força o gráfico padrão a exibir RPY como inicial."""
+        if not self.radio_rpy.isChecked():
+            self.radio_rpy.setChecked(True)
 
     def update_cursor(self, timestamp):
         """Atualiza a linha vertical (cursor) no gráfico."""
