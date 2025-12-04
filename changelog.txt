@@ -24,6 +24,7 @@ Versão Alpha 0.2.2
 + Gráfico Padrão de análise de variabilidade de vento
 
 Versão Alpha 0.2.3
+
 + Leitura logs do Datalogger (log**.csv)
 * Melhoria Plots em geral
 * Ajuste para tornar o programa um executável
@@ -34,11 +35,16 @@ Versão Alpha 0.2.3
 + Botões para tirar dados de Todos os gráficos
 + Gráfico de comparação permite escolher eixo X
 
+Versão Alpha 0.2.4
+
++ README em inglês documentando instalação, recursos e uso
++ Changelog atualizado e normalizado
+
 Versão Beta 0.3.0
-+ VIsualização 3D com Cesium
-+ Cores de modos de voo no visual 2D e 3D
-- Slider timestamp
-+ Slider HTML Sesium
-+ Otimização interface para carregar arquivos, não carrega de imediato graficos padrão
-+ Função de baixar logs diretamente do shareopoint e disponibilizar localmente
+
++ Visualizador 3D em Cesium com modelo da aeronave, HUD de atitude/posição e modo de seguir a rota
++ Seleção de camadas de mapa/imagery e melhorias no caminho 3D para dar contexto espacial ao voo
++ Timeline web sincronizada com o 3D e gráficos, mais responsiva que o slider Qt anterior
++ Descoberta de pastas de LOGs mais robusta, priorizando AppData e o pacote de "logs de teste"
++ Ajustes gerais em carregamento, escolha de logs e sincronização do timestamp
 + Organização repositório
