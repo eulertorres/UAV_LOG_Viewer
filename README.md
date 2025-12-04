@@ -56,5 +56,25 @@ All Python dependencies are pinned in [`requirements.txt`](requirements.txt).
 - `src/utils/` – helpers for resource discovery, SharePoint downloads, PDF reporting, and the local folium map server.
 - `assets/` – icons, 3D models, and supporting static files for the map and timeline views.
 
-## Changelog
-See [`changelog.txt`](changelog.txt) for a history of notable changes.
+## Release highlights
+Here's a quick view of what has changed recently. See [`changelog.txt`](changelog.txt) for full details.
+
+### Beta 0.3.0
+- Integrated a Cesium-powered 3D flight viewer with aircraft model, HUD, camera follow mode, and selectable imagery layers for richer spatial context.
+- Rebuilt the timeline using a web-based control to keep the 3D view and plots synchronized while improving responsiveness.
+- Hardened log discovery with clearer fallbacks between the AppData `Logs` folder, the `XMOBOTS_LOG_DIR` environment override, and the bundled sample logs.
+
+### Version 0.2.4
+- Added this English README and refreshed the changelog.
+
+### Version 0.2.3
+- Added datalogger CSV support, executable packaging tweaks, and options to choose the X-axis in comparison plots.
+- Made the app start on the Positioning tab, streamlined finding logs in the root folder, and refined the “Todos os Gráficos” controls.
+
+### Version 0.2.2
+- Enabled reading embedded `.mat` and `.spi` logs, switched all-plots rendering to PyQt6, and synchronized the timeline scale with graph timestamps.
+- Added dynamic timestamp indicators, wind variability analysis, and general plotting speed improvements.
+
+### Version 0.1.1
+- Introduced manual timestamps, synchronized cursors across plots, multi-log analysis, and the first PDF export (experimental).
+- Added aircraft indicators on trajectories, performance improvements for loading logs and sliders, and the iconic cat GIF.

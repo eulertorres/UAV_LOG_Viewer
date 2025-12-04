@@ -39,3 +39,11 @@ Versão 0.2.4
 
 + README em inglês documentando instalação, recursos e uso
 + Changelog atualizado e normalizado
+
+Versão 0.3.0 (Beta)
+
++ Visualizador 3D em Cesium com modelo da aeronave, HUD de atitude/posição e modo de seguir a rota
++ Seleção de camadas de mapa/imagery e melhorias no caminho 3D para dar contexto espacial ao voo
++ Timeline web sincronizada com o 3D e gráficos, mais responsiva que o slider Qt anterior
++ Descoberta de pastas de LOGs mais robusta, priorizando AppData, variável `XMOBOTS_LOG_DIR` e o pacote de "logs de teste"
++ Ajustes gerais em carregamento, escolha de logs e sincronização do timestamp
