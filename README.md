@@ -1,5 +1,13 @@
 # Euler Log Viewer
 
+<p align="center">
+  <img src="assets/Prints/Overview3D.png" alt="Visão Geral 3D" width="800">
+</p>
+
+<p align="center">
+  <img src="assets/Prints/Overview2D.png" alt="Visão Geral 2D" width="800">
+</p>
+
 [![Versão em Português](https://img.shields.io/badge/Versão-PT--BR-blue)](README.pt-BR.md)
 [![English](https://img.shields.io/badge/Language-EN-blue)](README.md)
 
