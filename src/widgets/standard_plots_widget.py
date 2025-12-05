@@ -558,12 +558,6 @@ class StandardPlotsWidget(QWidget):
         self._open_windows = []
 
         layout = QVBoxLayout(self)
-        header = QLabel(
-            "Selecione um gráfico para gerar. Cada gráfico abrirá em uma nova janela para reduzir o processamento."
-        )
-        header.setWordWrap(True)
-        layout.addWidget(header)
-
         grid = QGridLayout()
         layout.addLayout(grid)
 

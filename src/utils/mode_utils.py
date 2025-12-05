@@ -18,7 +18,7 @@ class ModeSegment:
 def _resolve_mode_palette(df: pd.DataFrame) -> Dict[int, Tuple[str, Tuple[int, int, int]]]:
     fw_modes = {
         -1: ("RC Mode", (96, 125, 139)),
-        0: ("Subir (RTL)", (3, 155, 229)),
+        0: ("Subir", (156, 39, 176)),
         1: ("Manual (FW150)", (33, 150, 243)),
         2: ("SEMI", (0, 188, 212)),
         3: ("Survey", (76, 175, 80)),
@@ -26,6 +26,7 @@ def _resolve_mode_palette(df: pd.DataFrame) -> Dict[int, Tuple[str, Tuple[int, i
         5: ("Orbit", (255, 112, 67)),
         8: ("Landing", (244, 67, 54)),
         9: ("TakeOff", (141, 110, 99)),
+        255: ("RC manual", (121, 85, 72)),
     }
     rw_modes = {
         0: ("Stabilize", (3, 169, 244)),

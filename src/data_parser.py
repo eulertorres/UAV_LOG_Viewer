@@ -1274,6 +1274,7 @@ class LogProcessingWorker(QObject):
                             log_file_path = os.path.join(folder_path, filename)
                             df_main = parse_log_file(log_file_path)
                             if not df_main.empty:
+                                df_main.attrs["log_type"] = "Xcockpit (.log)"
                                 main_type = "Xcockpit (.log)"
                                 main_filename = filename
                             break
@@ -1288,6 +1289,7 @@ class LogProcessingWorker(QObject):
                                 log_file_path = os.path.join(folder_path, filename)
                                 df_main = parse_csv_file(log_file_path)
                                 if not df_main.empty:
+                                    df_main.attrs["log_type"] = "CSV (.csv)"
                                     main_type = "CSV (.csv)"
                                     main_filename = filename
                                 break
@@ -1300,6 +1302,7 @@ class LogProcessingWorker(QObject):
                     if os.path.exists(spi_path):
                         df_main = parse_spi_log_via_c(spi_path)
                         if not df_main.empty:
+                            df_main.attrs["log_type"] = "Embarcado (spi.log via C)"
                             main_type = "Embarcado (spi.log via C)"
                             main_filename = "spi.log"
 
@@ -1309,6 +1312,7 @@ class LogProcessingWorker(QObject):
                     if os.path.exists(afgs_path):
                         df_main = parse_afgs_monitoring_log(afgs_path)
                         if not df_main.empty:
+                            df_main.attrs["log_type"] = "Embarcado (AFGS_Monitoring.log)"
                             main_type = "Embarcado (AFGS_Monitoring.log)"
                             main_filename = "AFGS_Monitoring.log"
 
@@ -1320,6 +1324,7 @@ class LogProcessingWorker(QObject):
                                 mat_path = os.path.join(folder_path, filename)
                                 df_main = parse_mat_file(mat_path)
                                 if not df_main.empty:
+                                    df_main.attrs["log_type"] = "Embarcado (.mat)"
                                     main_type = "Embarcado (.mat)"
                                     main_filename = filename
                                     break
@@ -1333,6 +1338,7 @@ class LogProcessingWorker(QObject):
                             log_path = os.path.join(folder_path, filename)
                             df_d = parse_datalogger_file(log_path)
                             if not df_d.empty:
+                                df_d.attrs["log_type"] = "Datalogger (logXX.csv)"
                                 # Nome exibido: <pasta> - <arquivo>
                                 display_name = f"{folder_label} - {filename}"
                                 loaded_logs[display_name] = df_d

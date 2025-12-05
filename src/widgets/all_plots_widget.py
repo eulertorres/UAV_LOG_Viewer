@@ -1,7 +1,7 @@
 # all_plots_widget.py — Tema branco + legendas completas + sync X com debounce
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QScrollArea, QCheckBox, QGridLayout, QHBoxLayout,
-    QPushButton, QDialog, QDialogButtonBox
+    QPushButton, QDialog, QDialogButtonBox, QToolButton
 )
 from PyQt6.QtCore import Qt, QTimer
 import pandas as pd
@@ -67,6 +67,38 @@ class GraphMenuDialog(QDialog):
     def get_states(self) -> dict[str, bool]:
         return {title: cb.isChecked() for title, cb in self._checkboxes.items()}
 
+
+class CollapsibleSection(QWidget):
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self.toggle_button = QToolButton(checkable=True, checked=True)
+        self.toggle_button.setArrowType(Qt.ArrowType.DownArrow)
+        self.toggle_button.toggled.connect(self._on_toggled)
+
+        self.title_label = QLabel(title)
+        self.title_label.setStyleSheet("font-weight: 600;")
+
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(6)
+        header_layout.addWidget(self.toggle_button, 0, Qt.AlignmentFlag.AlignLeft)
+        header_layout.addWidget(self.title_label, 1, Qt.AlignmentFlag.AlignVCenter)
+
+        self.content_area = QWidget()
+        self.content_area.setVisible(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(header_layout)
+        layout.addWidget(self.content_area)
+
+    def setContentLayout(self, content_layout: QVBoxLayout):
+        self.content_area.setLayout(content_layout)
+
+    def _on_toggled(self, checked: bool):
+        self.toggle_button.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+        self.content_area.setVisible(checked)
+
 class AllPlotsWidget(QWidget):
     """
     Visualização rolável de múltiplos gráficos (PyQtGraph):
@@ -86,13 +118,17 @@ class AllPlotsWidget(QWidget):
         self._syncing = False
         self._plot_widgets = []
         self.current_log_name = ""
+        self.current_log_type = ""
         self._mode_segments: list[ModeSegment] = []
         self._config = load_config()
         self._legend_widget = None
         self._available_graph_titles: list[str] = []
         self._pending_df = pd.DataFrame()
         self._pending_log_name = ""
+        self._pending_log_type = ""
         self._plots_dirty = False
+        self._group_definitions: list[dict] = []
+        self._sidebar_sections: dict[str, dict] = {}
 
         # Timer de debounce para sincronizar X
         self._sync_timer = QTimer(self)
@@ -101,8 +137,44 @@ class AllPlotsWidget(QWidget):
         self._sync_timer.timeout.connect(self._sync_do_broadcast)
         self._pending_source_vb = None
 
-        main_layout = QVBoxLayout(self)
+        main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
+        main_layout.setSpacing(10)
+
+        # Painel lateral de seleção
+        sidebar_container = QWidget()
+        sidebar_container.setMinimumWidth(320)
+        sidebar_container.setMaximumWidth(380)
+        sidebar_layout = QVBoxLayout(sidebar_container)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(8)
+
+        buttons_row = QHBoxLayout()
+        self.btn_plot_all = QPushButton("Plotar todos")
+        self.btn_plot_all.clicked.connect(self._plot_all_graphs)
+        self.btn_clear_all = QPushButton("Remover todos")
+        self.btn_clear_all.clicked.connect(self._clear_all_graphs)
+        buttons_row.addWidget(self.btn_plot_all)
+        buttons_row.addWidget(self.btn_clear_all)
+        sidebar_layout.addLayout(buttons_row)
+
+        self.groups_area = QScrollArea()
+        self.groups_area.setWidgetResizable(True)
+        self.groups_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        groups_content = QWidget()
+        self.groups_layout = QVBoxLayout(groups_content)
+        self.groups_layout.setContentsMargins(0, 0, 0, 0)
+        self.groups_layout.setSpacing(8)
+        self.groups_area.setWidget(groups_content)
+        sidebar_layout.addWidget(self.groups_area, 1)
+
+        main_layout.addWidget(sidebar_container, 0)
+
+        # Área de gráficos
+        plots_container = QWidget()
+        plots_layout = QVBoxLayout(plots_container)
+        plots_layout.setContentsMargins(0, 0, 0, 0)
+        plots_layout.setSpacing(6)
 
         header_container = QWidget()
         header_container.setMaximumHeight(120)
@@ -113,23 +185,26 @@ class AllPlotsWidget(QWidget):
         self.legend_holder.setContentsMargins(0, 0, 0, 0)
         header_layout.addLayout(self.legend_holder)
 
-        main_layout.addWidget(header_container)
+        plots_layout.addWidget(header_container)
 
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setStyleSheet("background-color: white; border: none;")
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        main_layout.addWidget(scroll_area)
+        plots_layout.addWidget(scroll_area)
 
         scroll_content = QWidget()
         scroll_content.setStyleSheet("background-color: white;")
         self.plots_layout = QVBoxLayout(scroll_content)
         scroll_area.setWidget(scroll_content)
 
+        main_layout.addWidget(plots_container, 1)
+
     # ========== API pública ==========
-    def load_dataframe(self, df: pd.DataFrame, log_name: str = ""):
+    def load_dataframe(self, df: pd.DataFrame, log_name: str = "", log_type: str = ""):
         self._pending_df = df
         self._pending_log_name = log_name or ""
+        self._pending_log_type = log_type or ""
         self._plots_dirty = True
         if self.isVisible():
             self._apply_pending_update()
@@ -230,6 +305,14 @@ class AllPlotsWidget(QWidget):
     def _update_plots(self):
         self._clear_plots()
 
+        df_plot = self.df.copy()
+        if not df_plot.empty and 'Timestamp' in df_plot.columns:
+            df_plot['_ts_'] = df_plot['Timestamp'].map(self._to_epoch_seconds)
+        else:
+            df_plot['_ts_'] = pd.Series(dtype=float)
+
+        self._prepare_groups(df_plot)
+
         if self.df.empty:
             self._create_info_label("Carregue um arquivo de log para ver os gráficos.")
             return
@@ -238,60 +321,33 @@ class AllPlotsWidget(QWidget):
             self._create_info_label("Coluna 'Timestamp' não encontrada no DataFrame.")
             return
 
-        ts_epoch = self.df['Timestamp'].map(self._to_epoch_seconds)
-        df_plot = self.df.copy()
-        df_plot['_ts_'] = ts_epoch
+        if self._should_render_mode_regions():
+            self._mode_segments = compute_mode_segments(df_plot)
+        else:
+            self._mode_segments = []
+        if self._mode_segments:
+            self._add_mode_legend()
+        else:
+            self._clear_legend()
 
-        self._mode_segments = compute_mode_segments(df_plot)
-        self._add_mode_legend()
+        graphs_added = False
 
-        plotting_config = [
-            {'title': 'Atitude da Aeronave', 'primary_y': {'cols': ['Roll', 'Pitch', 'Yaw'], 'label': 'Graus (°)'}},
-            {'title': 'Altitude e Velocidade Vertical', 'primary_y': {'cols': ['AltitudeAbs', 'QNE'], 'label': 'Altitude (m)'},
-             'secondary_y': {'cols': ['VSI'], 'label': 'Vel. Vertical (m/s)'}},
-            {'title': 'Status e Alertas do Sistema',
-             'primary_y': {'cols': ['IsFlying', 'isVTOL', 'ModoVoo', 'Spoofing', 'Jamming'], 'label': 'Estado (On/Off)', 'style': 'steps-post'}},
-            {'title': 'Status do Receptor GNSS', 'primary_y': {'cols': ['Satellites', 'Sat_use'], 'label': 'Contagem'},
-             'secondary_y': {'cols': ['RTK_Status'], 'label': 'Status RTK'}},
-            {'title': 'Energia do Sistema', 'primary_y': {'cols': ['Voltage', 'VTOL_vbat', 'Filt_VDC'], 'label': 'Tensão (V)'},
-             'secondary_y': {'cols': ['Porcent_bat'], 'label': 'Bateria (%)'}},
-            {'title': 'Dados de Voo (Air Data)', 'primary_y': {'cols': ['ASI', 'WSI'], 'label': 'Velocidade (m/s)'},
-             'secondary_y': {'cols': ['WindDirection'], 'label': 'Direção do Vento (°)'}},
-            {'title': 'Comandos dos Atuadores', 'primary_y': {'cols': ['Elevator', 'Aileron'], 'label': 'Comando'}},
-            {'title': 'Motor', 'primary_y': {'cols': ['RPM'], 'label': 'RPM'},
-             'secondary_y': {'cols': ['CHT'], 'label': 'Temperatura (°C)'}},
-        ]
-
-        self._register_graph_titles([c['title'] for c in plotting_config])
-
-        plotted_cols = set()
-        graphs_added = bool(self._mode_segments)
-
-        for config in plotting_config:
-            if not self._is_graph_enabled(config['title']):
+        for group in self._group_definitions:
+            plots = group.get('plots', [])
+            if not plots:
                 continue
-            config_cols = []
-            if 'primary_y' in config:
-                config_cols.extend(config['primary_y']['cols'])
-            if 'secondary_y' in config:
-                config_cols.extend(config['secondary_y']['cols'])
-
-            plotted = self._create_plot_from_config(config, df_plot)
-            if plotted:
-                plotted_cols.update(plotted)
-                graphs_added = True
-
-        remaining_cols = [c for c in df_plot.select_dtypes(include=np.number).columns
-                          if c not in plotted_cols and c not in ('_ts_',) and 'Timestamp' not in c]
-
-        grouped_configs = self._build_remaining_configs(remaining_cols, df_plot)
-        self._register_graph_titles([c['title'] for c in grouped_configs])
-        for config in grouped_configs:
-            if not self._is_graph_enabled(config['title']):
-                continue
-            plotted = self._create_plot_from_config(config, df_plot)
-            if plotted:
-                graphs_added = True
+            group_header_added = False
+            for config in plots:
+                if not self._is_graph_enabled(config['title']):
+                    continue
+                plotted = self._create_plot_from_config(config, df_plot)
+                if plotted:
+                    if not group_header_added:
+                        self._add_group_header(group['title'])
+                        group_header_added = True
+                    graphs_added = True
+            if group_header_added:
+                self.plots_layout.addSpacing(4)
 
         if graphs_added:
             self.plots_layout.addStretch(1)
@@ -305,6 +361,105 @@ class AllPlotsWidget(QWidget):
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setStyleSheet("color: gray; font-size: 14px;")
         self.plots_layout.addWidget(label)
+
+    def _add_group_header(self, title: str):
+        header = QLabel(title)
+        header.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        header.setStyleSheet("font-size: 14px; font-weight: 700; padding: 6px 0px 2px 0px;")
+        self.plots_layout.addWidget(header)
+
+    def _rebuild_sidebar(self):
+        if not hasattr(self, 'groups_layout'):
+            return
+        while self.groups_layout.count():
+            item = self.groups_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        self._sidebar_sections.clear()
+
+        for group in self._group_definitions:
+            plots = group.get('plots', [])
+            if not plots:
+                continue
+            section = CollapsibleSection(group.get('title', ''))
+            content_layout = QVBoxLayout()
+            content_layout.setContentsMargins(4, 4, 4, 4)
+            content_layout.setSpacing(6)
+
+            actions_row = QHBoxLayout()
+            plot_btn = QPushButton("Plotar grupo")
+            plot_btn.setMinimumHeight(26)
+            plot_btn.clicked.connect(lambda _, key=group.get('key'): self._plot_group(key))
+            clear_btn = QPushButton("Limpar grupo")
+            clear_btn.setMinimumHeight(26)
+            clear_btn.clicked.connect(lambda _, key=group.get('key'): self._clear_group(key))
+            actions_row.addWidget(plot_btn)
+            actions_row.addWidget(clear_btn)
+            content_layout.addLayout(actions_row)
+
+            checkboxes = {}
+            for cfg in plots:
+                title = cfg['title']
+                cb = QCheckBox(title)
+                cb.setChecked(self._is_graph_enabled(title))
+                cb.stateChanged.connect(lambda state, t=title: self._on_graph_checkbox_toggled(t, state))
+                content_layout.addWidget(cb)
+                checkboxes[title] = cb
+
+            content_layout.addStretch(1)
+            section.setContentLayout(content_layout)
+            self.groups_layout.addWidget(section)
+            self._sidebar_sections[group.get('key', group.get('title', ''))] = {
+                'section': section,
+                'checkboxes': checkboxes,
+            }
+
+        self.groups_layout.addStretch(1)
+
+    def _apply_bulk_graph_state(self, updates: dict[str, bool]):
+        if not updates:
+            return
+        states = self.get_graph_states()
+        states.update(updates)
+        self.apply_graph_visibility(states)
+        self._sync_sidebar_states()
+
+    def _on_graph_checkbox_toggled(self, title: str, state):
+        enabled = Qt.CheckState(state) == Qt.CheckState.Checked
+        self._apply_bulk_graph_state({title: enabled})
+
+    def _plot_group(self, group_key: str | None):
+        group = next((g for g in self._group_definitions if g.get('key') == group_key), None)
+        if not group:
+            return
+        updates = {cfg['title']: True for cfg in group.get('plots', [])}
+        self._apply_bulk_graph_state(updates)
+
+    def _clear_group(self, group_key: str | None):
+        group = next((g for g in self._group_definitions if g.get('key') == group_key), None)
+        if not group:
+            return
+        updates = {cfg['title']: False for cfg in group.get('plots', [])}
+        self._apply_bulk_graph_state(updates)
+
+    def _plot_all_graphs(self):
+        updates = {cfg['title']: True for grp in self._group_definitions for cfg in grp.get('plots', [])}
+        self._apply_bulk_graph_state(updates)
+
+    def _clear_all_graphs(self):
+        updates = {cfg['title']: False for grp in self._group_definitions for cfg in grp.get('plots', [])}
+        self._apply_bulk_graph_state(updates)
+
+    def _sync_sidebar_states(self):
+        states = self.get_graph_states()
+        for section in self._sidebar_sections.values():
+            for title, cb in section.get('checkboxes', {}).items():
+                desired = states.get(title, True)
+                if cb.isChecked() != desired:
+                    cb.blockSignals(True)
+                    cb.setChecked(desired)
+                    cb.blockSignals(False)
 
     # ---------- Configuração de gráficos ----------
     def _register_graph_titles(self, titles: list[str]):
@@ -338,9 +493,11 @@ class AllPlotsWidget(QWidget):
         if self._pending_df is None or self._pending_df.empty:
             self._pending_df = self.df
             self._pending_log_name = self.current_log_name
+            self._pending_log_type = self.current_log_type
         self._plots_dirty = True
         if self.isVisible():
             self._apply_pending_update()
+        self._sync_sidebar_states()
 
     def _create_placeholder_plot(self, title):
         plotw = pg.PlotWidget(axisItems={'bottom': DateAxisItem(orientation='bottom')})
@@ -358,6 +515,7 @@ class AllPlotsWidget(QWidget):
             return
         self.df = self._pending_df
         self.current_log_name = self._pending_log_name
+        self.current_log_type = self._pending_log_type
         self._plots_dirty = False
         self._update_plots()
 
@@ -390,6 +548,86 @@ class AllPlotsWidget(QWidget):
             })
 
         return configs
+
+    def _prepare_groups(self, df_plot: pd.DataFrame):
+        base_groups = [
+            {
+                'key': 'navegacao',
+                'title': 'Navegação',
+                'plots': [
+                    {'title': 'Atitude da Aeronave', 'primary_y': {'cols': ['Roll', 'Pitch', 'Yaw'], 'label': 'Graus (°)'}},
+                    {'title': 'Altitude e Velocidade Vertical', 'primary_y': {'cols': ['AltitudeAbs', 'QNE'], 'label': 'Altitude (m)'},
+                     'secondary_y': {'cols': ['VSI'], 'label': 'Vel. Vertical (m/s)'}},
+                    {'title': 'Dados de Voo (Air Data)', 'primary_y': {'cols': ['ASI', 'WSI'], 'label': 'Velocidade (m/s)'},
+                     'secondary_y': {'cols': ['WindDirection'], 'label': 'Direção do Vento (°)'}},
+                ]
+            },
+            {
+                'key': 'gnss',
+                'title': 'GNSS',
+                'plots': [
+                    {'title': 'Status do Receptor GNSS', 'primary_y': {'cols': ['Satellites', 'Sat_use'], 'label': 'Contagem'},
+                     'secondary_y': {'cols': ['RTK_Status'], 'label': 'Status RTK'}}
+                ]
+            },
+            {
+                'key': 'sistema',
+                'title': 'Sistema',
+                'plots': [
+                    {'title': 'Status e Alertas do Sistema',
+                     'primary_y': {'cols': ['IsFlying', 'isVTOL', 'ModoVoo', 'Spoofing', 'Jamming'], 'label': 'Estado (On/Off)', 'style': 'steps-post'}},
+                    {'title': 'Energia do Sistema', 'primary_y': {'cols': ['Voltage', 'VTOL_vbat', 'Filt_VDC'], 'label': 'Tensão (V)'},
+                     'secondary_y': {'cols': ['Porcent_bat'], 'label': 'Bateria (%)'}},
+                ]
+            },
+            {
+                'key': 'atuadores',
+                'title': 'Atuadores',
+                'plots': [
+                    {'title': 'Comandos dos Atuadores', 'primary_y': {'cols': ['Elevator', 'Aileron', 'AileronR', 'AileronL'], 'label': 'Comando'}},
+                ]
+            },
+            {
+                'key': 'motor',
+                'title': 'Motor',
+                'plots': [
+                    {'title': 'Motor', 'primary_y': {'cols': ['RPM'], 'label': 'RPM'},
+                     'secondary_y': {'cols': ['CHT'], 'label': 'Temperatura (°C)'}},
+                ]
+            },
+        ]
+
+        used_cols = self._collect_used_columns(base_groups)
+        numeric_cols = []
+        if not df_plot.empty:
+            numeric_cols = [c for c in df_plot.select_dtypes(include=np.number).columns
+                            if c not in ('_ts_',) and 'Timestamp' not in c]
+
+        remaining_cols = [c for c in numeric_cols if c not in used_cols]
+        grouped_configs = self._build_remaining_configs(remaining_cols, df_plot)
+        if grouped_configs:
+            base_groups.append({
+                'key': 'outros',
+                'title': 'Outros dados',
+                'plots': grouped_configs
+            })
+
+        self._group_definitions = base_groups
+        all_titles = [cfg['title'] for grp in self._group_definitions for cfg in grp.get('plots', [])]
+        self._available_graph_titles = sorted(set(all_titles))
+        self._register_graph_titles(all_titles)
+        self._rebuild_sidebar()
+
+    @staticmethod
+    def _collect_used_columns(groups: list[dict]) -> set[str]:
+        used = set()
+        for group in groups:
+            for config in group.get('plots', []):
+                if 'primary_y' in config:
+                    used.update(config['primary_y'].get('cols', []))
+                if 'secondary_y' in config:
+                    used.update(config['secondary_y'].get('cols', []))
+        return used
 
     @staticmethod
     def _normalize_axis_group(column_name: str):
@@ -451,7 +689,7 @@ class AllPlotsWidget(QWidget):
         container_layout.setContentsMargins(0, 0, 0, 10)
 
         plotw = pg.PlotWidget(axisItems={'bottom': DateAxisItem(orientation='bottom')})
-        plotw.setMinimumHeight(360)
+        plotw.setMinimumHeight(216)
         plot_item = plotw.getPlotItem()
         plotw.setTitle(self._format_plot_title(config['title']))
         plot_item.showGrid(x=True, y=True, alpha=0.3)
@@ -636,6 +874,9 @@ class AllPlotsWidget(QWidget):
             self.vlines.append(line)
 
     # ---------- Faixas de modo de voo ----------
+    def _should_render_mode_regions(self) -> bool:
+        return 'xcockpit' not in (self.current_log_type or '').lower()
+
     def _add_mode_legend(self):
         if not self._mode_segments:
             self._clear_legend()
