@@ -71,17 +71,25 @@ class GraphMenuDialog(QDialog):
 class CollapsibleSection(QWidget):
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
-        self.toggle_button = QToolButton(text=title, checkable=True, checked=True)
-        self.toggle_button.setStyleSheet("font-weight: 600;")
+        self.toggle_button = QToolButton(checkable=True, checked=True)
         self.toggle_button.setArrowType(Qt.ArrowType.DownArrow)
         self.toggle_button.toggled.connect(self._on_toggled)
+
+        self.title_label = QLabel(title)
+        self.title_label.setStyleSheet("font-weight: 600;")
+
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(6)
+        header_layout.addWidget(self.toggle_button, 0, Qt.AlignmentFlag.AlignLeft)
+        header_layout.addWidget(self.title_label, 1, Qt.AlignmentFlag.AlignVCenter)
 
         self.content_area = QWidget()
         self.content_area.setVisible(True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.toggle_button)
+        layout.addLayout(header_layout)
         layout.addWidget(self.content_area)
 
     def setContentLayout(self, content_layout: QVBoxLayout):
@@ -356,7 +364,8 @@ class AllPlotsWidget(QWidget):
 
     def _add_group_header(self, title: str):
         header = QLabel(title)
-        header.setStyleSheet("font-size: 14px; font-weight: 700; padding: 4px 0px 2px 0px;")
+        header.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        header.setStyleSheet("font-size: 14px; font-weight: 700; padding: 6px 0px 2px 0px;")
         self.plots_layout.addWidget(header)
 
     def _rebuild_sidebar(self):
@@ -575,7 +584,7 @@ class AllPlotsWidget(QWidget):
                 'key': 'atuadores',
                 'title': 'Atuadores',
                 'plots': [
-                    {'title': 'Comandos dos Atuadores', 'primary_y': {'cols': ['Elevator', 'Aileron'], 'label': 'Comando'}},
+                    {'title': 'Comandos dos Atuadores', 'primary_y': {'cols': ['Elevator', 'Aileron', 'AileronR', 'AileronL'], 'label': 'Comando'}},
                 ]
             },
             {
@@ -680,7 +689,7 @@ class AllPlotsWidget(QWidget):
         container_layout.setContentsMargins(0, 0, 0, 10)
 
         plotw = pg.PlotWidget(axisItems={'bottom': DateAxisItem(orientation='bottom')})
-        plotw.setMinimumHeight(360)
+        plotw.setMinimumHeight(216)
         plot_item = plotw.getPlotItem()
         plotw.setTitle(self._format_plot_title(config['title']))
         plot_item.showGrid(x=True, y=True, alpha=0.3)

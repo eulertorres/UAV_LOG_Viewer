@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QStackedWidget
 )
 from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QIODevice, QBuffer, QTimer
-from PyQt6.QtGui import QMovie
+from PyQt6.QtGui import QMovie, QDesktopServices
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 import pandas as pd
@@ -85,6 +85,38 @@ class LoadingDialog(QDialog):
         if self.movie.isValid():
             self.movie.stop()
 
+
+class LoadingAnimationThread(QThread):
+    startRequested = pyqtSignal()
+    stopRequested = pyqtSignal()
+
+    def __init__(self, dialog: LoadingDialog):
+        super().__init__()
+        self.dialog = dialog
+        self._running = False
+        self.startRequested.connect(self._show_dialog, Qt.ConnectionType.QueuedConnection)
+        self.stopRequested.connect(self._hide_dialog, Qt.ConnectionType.QueuedConnection)
+
+    def _show_dialog(self):
+        if self.dialog:
+            self.dialog.start_animation()
+            self.dialog.show()
+
+    def _hide_dialog(self):
+        if self.dialog:
+            self.dialog.stop_animation()
+            self.dialog.hide()
+
+    def run(self):
+        self._running = True
+        self.startRequested.emit()
+        while self._running:
+            self.msleep(50)
+        self.stopRequested.emit()
+
+    def stop(self):
+        self._running = False
+
 class TelemetryApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -110,12 +142,13 @@ class TelemetryApp(QMainWindow):
         self.map_server.start()
         self.temp_map_file_path = ""
         self.map_js_name = ""
-        self.map_is_ready = False 
+        self.map_is_ready = False
         self.aircraft_marker_js_name = ""
         self.wind_marker_js_name = ""
         self.standard_plots_tab = None
 
         self.loading_widget = LoadingDialog(self, animation_path=LOADING_GIF_PATH)
+        self.loading_thread: LoadingAnimationThread | None = None
 
         self.view_toggle_checkbox = None
         self.map_stack = None
@@ -205,6 +238,20 @@ class TelemetryApp(QMainWindow):
             print(f"ERRO CRÍTICO ao copiar assets para o servidor: {e}")
             QMessageBox.warning(self, "Erro de Asset", f"Não foi possível copiar o ícone para o servidor:\n{e}")
             return None
+
+    def _show_loading_spinner(self):
+        if self.loading_thread is not None:
+            return
+        self.loading_thread = LoadingAnimationThread(self.loading_widget)
+        self.loading_thread.start()
+
+    def _hide_loading_spinner(self):
+        if self.loading_thread is None:
+            return
+        self.loading_thread.stop()
+        self.loading_thread.wait()
+        self.loading_thread = None
+        self.loading_widget.hide()
         
     def setup_ui(self):
         self.central_widget = QWidget()
@@ -219,6 +266,10 @@ class TelemetryApp(QMainWindow):
         self.btn_open = QPushButton("Selecionar Diretório Raiz dos Logs")
         self.btn_open.clicked.connect(self.open_log_directories)
         top_controls_layout.addWidget(self.btn_open)
+
+        self.btn_open_logs_dir = QPushButton("Abrir pasta de logs")
+        self.btn_open_logs_dir.clicked.connect(self.open_logs_directory)
+        top_controls_layout.addWidget(self.btn_open_logs_dir)
 
         self.btn_download_sharepoint = QPushButton("Baixar Novos Logs")
         self.btn_download_sharepoint.setToolTip(
@@ -318,10 +369,10 @@ class TelemetryApp(QMainWindow):
         # --- Controles da Timeline (Abaixo do Splitter, largura total) ---
         self.setup_timeline_controls(self.layout)
 
-        # Define os tamanhos iniciais do splitter (favorece espaço para os gráficos)
-        self.splitter.setStretchFactor(0, 3)
+        # Define os tamanhos iniciais do splitter (50/50 entre gráficos e mapas)
+        self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([1800, 420])
+        self.splitter.setSizes([1000, 1000])
 
         if self.selected_gpu:
             self.statusBar().showMessage(
@@ -394,6 +445,12 @@ class TelemetryApp(QMainWindow):
             return
 
         self._start_loading_from_path(root_path)
+
+    def open_logs_directory(self):
+        target_dir = Path(self.last_logs_root or self.default_logs_dir)
+        if not target_dir.exists():
+            target_dir = Path(self.default_logs_dir)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target_dir)))
 
     def open_options_dialog(self):
         dialog = OptionsDialog(self)
@@ -477,8 +534,7 @@ class TelemetryApp(QMainWindow):
         self.loading_status_widget.show()
         QApplication.processEvents()
 
-        self.loading_widget.start_animation()
-        self.loading_widget.open()
+        self._show_loading_spinner()
 
         self.thread = QThread()
         self.worker = LogProcessingWorker(root_path)
@@ -519,16 +575,12 @@ class TelemetryApp(QMainWindow):
 
     def on_loading_finished(self, loaded_logs):
         
-        #self.loading_widget.stop_animation()
-        #self.loading_widget.close()
-        
         self.loading_status_widget.hide() # Esconde barra e texto
         self.setWindowTitle(self.original_window_title) # Restaura título
         self.btn_open.setEnabled(True) # Reabilita botão
 
         if not loaded_logs:
-            self.loading_widget.stop_animation()
-            self.loading_widget.close()
+            self._hide_loading_spinner()
             QMessageBox.information(self, "NUM TEM Log", "Você que fez errado, lê direito vei, É a pasta que tem as pastas de .log")
             self.statusBar().showMessage("NAO TEM LOGGGGG AAAAAA", 5000)
             self.btn_open.setEnabled(True)
@@ -540,8 +592,7 @@ class TelemetryApp(QMainWindow):
         self._on_log_selected(self.log_selector_combo.currentText()) # Seleciona o primeiro
         self.custom_plot_tab.reload_data(self.log_data)
         self.statusBar().showMessage(f"{len(loaded_logs)} log(s) carregado(s)!!!", 5000)
-        self.loading_widget.stop_animation()
-        self.loading_widget.close()
+        self._hide_loading_spinner()
 
     def on_loading_error(self, error_message):
 
@@ -549,8 +600,7 @@ class TelemetryApp(QMainWindow):
         self.setWindowTitle(self.original_window_title)
         self.btn_open.setEnabled(True)
 
-        self.loading_widget.stop_animation()
-        self.loading_widget.close()
+        self._hide_loading_spinner()
 
         QMessageBox.critical(self, "Não consigo ler :( help", error_message)
         self.statusBar().showMessage("Etaporra deu ruim em carregar os logs", 5000)
@@ -593,10 +643,11 @@ class TelemetryApp(QMainWindow):
         self.current_log_type = self.log_types.get(log_name, "")
         if hasattr(self.df, 'attrs'):
             self.current_log_type = self.current_log_type or self.df.attrs.get('log_type', "")
+        self._normalize_timestamp_column()
+        self.log_data[log_name] = self.df
         self._update_altitude_reference()
 
-        self.loading_widget.start_animation()
-        self.loading_widget.open()
+        self._show_loading_spinner()
         QApplication.processEvents()
 
         try:
@@ -627,8 +678,7 @@ class TelemetryApp(QMainWindow):
             else:
                 self.view_toggle_checkbox.setEnabled(False)
         finally:
-            self.loading_widget.stop_animation()
-            self.loading_widget.close()
+            self._hide_loading_spinner()
 
     def _on_tab_changed(self, index):
         if not self.tabs:
@@ -907,19 +957,21 @@ class TelemetryApp(QMainWindow):
                 box-shadow: 0 1px 4px rgba(0,0,0,0.2);
                 font-size: 12px;
                 color: #263238;
+                display: flex;
+                flex-wrap: wrap;
+                gap: 6px 10px;
+                align-items: center;
+                max-width: 360px;
             }}
             .mode-legend-title {{
                 font-weight: 700;
-                margin-bottom: 6px;
+                margin-bottom: 4px;
+                width: 100%;
             }}
             .mode-item {{
-                display: flex;
+                display: inline-flex;
                 align-items: center;
                 gap: 6px;
-                margin-bottom: 4px;
-            }}
-            .mode-item:last-child {{
-                margin-bottom: 0;
             }}
             .mode-swatch {{
                 width: 14px;
@@ -1817,6 +1869,17 @@ class TelemetryApp(QMainWindow):
             return
         first_valid = self.df['AltitudeAbs'].dropna()
         self.altitude_reference = float(first_valid.iloc[0]) if not first_valid.empty else 0.0
+
+    def _normalize_timestamp_column(self):
+        if 'Timestamp' not in self.df.columns:
+            return
+        try:
+            ts = pd.to_datetime(self.df['Timestamp'], errors='coerce')
+            if ts.isna().all():
+                return
+            self.df = self.df.assign(Timestamp=ts).sort_values('Timestamp').reset_index(drop=True)
+        except Exception:
+            pass
 
     def _rgb_to_hex(self, color_tuple):
         try:
